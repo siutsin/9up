@@ -1,0 +1,24 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:best-practices',
+  ],
+  automerge: true,
+  major: {
+    automerge: false,
+  },
+  minimumReleaseAge: '3 days',
+  osvVulnerabilityAlerts: true,
+  vulnerabilityAlerts: { enabled: true },
+  rebaseWhen: 'behind-base-branch',
+  lockFileMaintenance: { enabled: true },
+  packageRules: [
+    {
+      // Vulnerability fixes ship at once. The age wait stays for all other updates.
+      matchJsonata: [
+        '$exists(vulnerabilityFixVersion) or $exists(isVulnerabilityAlert)',
+      ],
+      minimumReleaseAge: null,
+    },
+  ],
+}
