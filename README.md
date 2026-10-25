@@ -8,16 +8,16 @@ Not yet. `Cargo.toml` arrives in Step 1.
 
 ## Development
 
-Run `mise install` for the non-Rust tools. Then check your change:
+Check your change:
 
 ```sh
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
-markdownlint-cli2 '**/*.md'
 ```
 
 ## Credit
 
-This is a Rust port of [`gitup`](https://github.com/earwig/git-repo-updater) (git-repo-updater) 0.5.2, the Python tool by
-Ben Kurtovic.
+9up is inspired by [`gitup`](https://github.com/earwig/git-repo-updater) (git-repo-updater) 0.5.2, the Python tool by
+Ben Kurtovic. It is a new implementation, not a port, and it keeps his MIT license (see `LICENSE`).
+
