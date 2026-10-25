@@ -283,15 +283,18 @@ this plan states gets a plan update in the same pull request.
 | `tests/cli.rs` | Integration tests for the binary. |
 | `.editorconfig` | Final newline, UTF-8, LF, trim trailing whitespace. Two-space indent for YAML and Markdown only. Rust follows `cargo fmt`. `*.md`: no trailing-whitespace trim, line length off. |
 | `.gitignore` | `/target/` and `/.scratchpad/`. |
-| `.github/workflows/lint.yaml` | One `lint` job: format check and clippy. Details under CI Workflows. |
+| `.github/workflows/lint.yaml` | Exists, with the `markdown` job. Step 1 adds the `rust` job. Details under CI Workflows. |
 | `.github/workflows/test.yaml` | One `test` job: `cargo test --locked` on `ubuntu-latest` and `macos-latest`. |
-| `AGENTS.md` | Exists. Updated: the Feature Spec is the reference, and the verify line lists the three cargo checks. |
+| `.github/workflows/claude.yaml` | Exists. Baseline: the Claude review workflows. Unchanged by this plan. |
+| `.github/workflows/zizmor.yaml` | Exists. Baseline: workflow security lint. Its SARIF upload stays commented out while the repository is private, because code scanning needs GitHub Advanced Security. |
+| `mise.toml` | Exists. Baseline: pins the non-Rust tools (markdownlint, zizmor). |
+| `.markdownlint-cli2.jsonc` | Exists. Baseline: the markdownlint configuration. |
+| `AGENTS.md` | Exists. Updated: the Feature Spec is the reference, and the verify line lists the four checks. |
 | `CLAUDE.md` | One line: `@AGENTS.md`. |
-| `README.md` | Exists. Updated: Development lists the three cargo checks, and the credit says 9up is inspired by `gitup`, not a port. |
+| `README.md` | Exists. Updated: Development lists the four checks, and the credit says 9up is inspired by `gitup`, not a port. |
 
-Deleted with this plan: `.github/workflows/claude.yaml`, `.github/workflows/zizmor.yaml`, the old
-`.github/workflows/lint.yaml`, `mise.toml` and `.markdownlint-cli2.jsonc`. Step 1 creates the new `lint.yaml`.
-The repository has no CI between this plan's merge and Step 1, which is fine before any code exists.
+The workflows, `mise.toml` and the markdownlint configuration are baseline. They stay as they are, and the
+steps build on them.
 
 Not added: `rustfmt.toml` (the defaults), `deny.toml`, `.cargo/config.toml`, `build.rs`, a cargo workspace.
 
@@ -319,12 +322,13 @@ dbg_macro = "warn"
 
 ### Local Checks
 
-Run all three before every commit. They are the whole gate.
+Run all four before every commit. They are the whole gate.
 
 ```sh
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+markdownlint-cli2 "**/*.md" "#node_modules" "#target"
 ```
 
 ### Clap Notes
@@ -340,11 +344,13 @@ cargo test --locked
 
 ### CI Workflows
 
-Two workflows, both with `permissions: contents: read` and `persist-credentials: false` on checkout.
+The baseline workflows stay: `claude.yaml` (Claude review), `zizmor.yaml` (workflow security lint, SARIF
+upload commented out while the repository is private) and `lint.yaml` with its `markdown` job. Step 1 adds
+the Rust jobs, each with `permissions: contents: read` and `persist-credentials: false` on checkout.
 
-- `lint.yaml`: one `lint` job on `ubuntu-latest`. It runs `cargo fmt --check`, then
+- `lint.yaml` gains a `rust` job on `ubuntu-latest`. It runs `cargo fmt --check`, then
   `cargo clippy --locked --all-targets -- -D warnings`.
-- `test.yaml`: one `test` job on `ubuntu-latest` and `macos-latest`. It runs `cargo test --locked`.
+- `test.yaml` is new: one `test` job on `ubuntu-latest` and `macos-latest`. It runs `cargo test --locked`.
 
 Each Rust job installs the toolchain with `rustup` (no argument, so it reads `rust-toolchain.toml`), then uses
 `Swatinem/rust-cache` for the build cache. Actions are pinned to a full commit SHA, with the version in a
@@ -352,10 +358,10 @@ comment.
 
 ### Done When
 
-- All three local checks are green, and both CI workflows are green.
+- All four local checks are green, and CI is green.
 - `cargo run -- -v` prints `9up 0.1.0`.
 - `README.md` has three sections: Install ("Not yet. `Cargo.toml` arrives in Step 1." until the crate lands,
-  then the `cargo install --path .` form), Development (the three checks) and Credit.
+  then the `cargo install --path .` form), Development (the four checks) and Credit.
 - The first Renovate run tracks `rust-toolchain.toml` and the crates.
 
 ## Module Breakdown
@@ -413,7 +419,7 @@ order.
 
 ## Build Order
 
-One pull request per step, in order. Each pull request ends with all three local checks green.
+One pull request per step, in order. Each pull request ends with all four local checks green.
 
 | Step | Content | Crates that arrive |
 | --- | --- | --- |

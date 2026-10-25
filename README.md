@@ -8,12 +8,13 @@ Not yet. `Cargo.toml` arrives in Step 1.
 
 ## Development
 
-Check your change:
+Run `mise install` for the non-Rust tools. Then check your change:
 
 ```sh
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+markdownlint-cli2 '**/*.md'
 ```
 
 ## Credit
