@@ -247,7 +247,6 @@ the lexical path normalisation (a short function over path parts), and the child
 Not added: a colour crate, an error-type crate, a directory-walk crate, a test-framework crate, `dirs` or
 `home` (the home directory comes from the `HOME` environment variable).
 
-
 ## Step 1: Foundation, Bookmarks And Discovery
 
 One pull request builds the crate, the bookmark actions and repository discovery. No repository updates yet:

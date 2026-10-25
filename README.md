@@ -21,4 +21,3 @@ markdownlint-cli2 '**/*.md'
 
 9up is inspired by [`gitup`](https://github.com/earwig/git-repo-updater) (git-repo-updater) 0.5.2, the Python tool by
 Ben Kurtovic. It is a new implementation, not a port, and it keeps his MIT license (see `LICENSE`).
-
