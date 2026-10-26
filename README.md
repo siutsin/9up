@@ -4,6 +4,8 @@ Update many git repositories at once.
 
 ## Install
 
+Requires `git` on the `PATH` at version 2.41 or later.
+
 ```sh
 cargo install --path .
 ```
@@ -22,8 +24,9 @@ cargo install --path .
 ```
 
 Bookmarks live one path per line in `$XDG_CONFIG_HOME/gitup/bookmarks`, or `~/.config/gitup/bookmarks` when
-the variable is unset — the format is `gitup`'s, so an existing file carries over. Pass `-b <path>` to use a
-different file, or `-b ""` for the default. Update takes `--current-only`, `--fetch-only`, `--prune` and
+the variable is unset or empty, and a relative value is ignored — the format is `gitup`'s, so an existing file
+carries over. Pass `-b <path>` to use a different file, or `-b ""` for the default. Update takes
+`--current-only`, `--fetch-only`, `--prune` and
 `--depth <n>` (short `-t`; negative means no limit). `exec` takes `--depth` too.
 
 ## Development

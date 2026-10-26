@@ -57,10 +57,10 @@ jobs:
       - name: Cache the build
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - name: Setup mise
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          tool: cargo-llvm-cov@0.9.1
+          cache: false
 
       - name: Measure the coverage
         run: cargo llvm-cov --locked

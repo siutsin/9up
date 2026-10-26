@@ -46,7 +46,9 @@ pub fn normalize(path: &str, cwd: &Path) -> String {
         match part {
             "" | "." => {}
             ".." => {
-                if parts.last().is_some_and(|last| *last != "~") {
+                // Only a sole leading `~` is protected: a mid-path `~`
+                // is an ordinary component that `..` can pop.
+                if !(parts.len() == 1 && parts[0] == "~") {
                     parts.pop();
                 }
             }
@@ -104,6 +106,11 @@ mod tests {
         assert_eq!(normalize("/a//b/./c/../d", cwd()), "/a/b/d");
         assert_eq!(normalize("/", cwd()), "/");
         assert_eq!(normalize("/../a", cwd()), "/a");
+    }
+
+    #[test]
+    fn normalize_resolves_a_mid_path_tilde() {
+        assert_eq!(normalize("a/~/../b", cwd()), "/work/a/b");
     }
 
     #[test]

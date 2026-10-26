@@ -6,11 +6,23 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 fn nine_up(dir: &Path, args: &[&str]) -> Output {
+    // HOME points at the test's temp dir, so no test reads the real
+    // default bookmark file.
     Command::new(env!("CARGO_BIN_EXE_9up"))
         .args(args)
         .current_dir(dir)
+        .env("HOME", dir)
         .output()
         .unwrap()
+}
+
+fn nine_up_env(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_9up"));
+    command.args(args).current_dir(dir).env("HOME", dir);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command.output().unwrap()
 }
 
 fn stdout(output: &Output) -> String {
@@ -82,7 +94,7 @@ fn discovery_prints_headers_and_names() {
     assert!(stdout(&listed).contains("a/repo"));
 
     let solo = nine_up(dir.path(), &[dir.path().join("solo").to_str().unwrap()]);
-    assert!(stdout(&solo).contains("solo"));
+    assert!(stdout(&solo).contains("\n  solo"), "{}", stdout(&solo));
 
     let empty = nine_up(
         dir.path(),
@@ -635,4 +647,345 @@ fn depth_uses_the_short_flag_t() {
     let out = nine_up(dir.path(), &["update", "-t", "-1", repo.to_str().unwrap()]);
     assert!(out.status.success(), "{out:?}");
     assert!(stdout(&out).contains("repo (1 repository)"));
+}
+
+fn ref_exists(dir: &Path, reference: &str) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--verify", "-q", reference])
+        .current_dir(dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+// Shared setup: a bare remote, a work clone that pushes to it, and a
+// stale clone that falls behind. Returns (remote, work, stale).
+fn remote_work_stale(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let remote = dir.join("remote.git");
+    git(
+        dir,
+        &[
+            "init",
+            "-q",
+            "-b",
+            "main",
+            "--bare",
+            remote.to_str().unwrap(),
+        ],
+    );
+    let work = dir.join("work");
+    git(
+        dir,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    commit_file(&work, "a");
+    git(&work, &["push", "-q", "origin", "main"]);
+    let stale = dir.join("stale");
+    git(
+        dir,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            stale.to_str().unwrap(),
+        ],
+    );
+    (remote, work, stale)
+}
+
+#[test]
+fn current_only_fetches_only_the_tracked_remote() {
+    let dir = tempfile::tempdir().unwrap();
+    let (remote, work, stale) = remote_work_stale(dir.path());
+    let other = dir.path().join("other.git");
+    git(
+        dir.path(),
+        &[
+            "init",
+            "-q",
+            "-b",
+            "main",
+            "--bare",
+            other.to_str().unwrap(),
+        ],
+    );
+    git(&work, &["remote", "add", "other", other.to_str().unwrap()]);
+    git(&work, &["push", "-q", "other", "main"]);
+    git(
+        &stale,
+        &["remote", "add", "upstream", other.to_str().unwrap()],
+    );
+    git(&stale, &["fetch", "-q", "upstream"]);
+    let upstream_before = sha(&stale, "refs/remotes/upstream/main");
+
+    commit_file(&work, "b");
+    git(&work, &["push", "-q", "origin", "main"]);
+    git(&work, &["push", "-q", "other", "main"]);
+    let _ = remote;
+
+    let out = nine_up(dir.path(), &["update", "-c", stale.to_str().unwrap()]);
+    let text = stdout(&out);
+    assert!(text.contains("Fetched origin"), "{text}");
+    assert!(!text.contains("upstream"), "{text}");
+    assert_eq!(sha(&stale, "refs/remotes/origin/main"), sha(&work, "main"));
+    assert_eq!(sha(&stale, "refs/remotes/upstream/main"), upstream_before);
+}
+
+#[test]
+fn list_survives_a_deleted_current_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let gone = dir.path().join("gone");
+    fs::create_dir(&gone).unwrap();
+    let bookmarks = dir.path().join("bookmarks");
+    fs::write(&bookmarks, "/srv/repos").unwrap();
+    // cd into a directory, delete it, then run: list needs no cwd.
+    let script = format!(
+        "cd {} && rmdir {} && exec {} -b {} list",
+        gone.display(),
+        gone.display(),
+        env!("CARGO_BIN_EXE_9up"),
+        bookmarks.display()
+    );
+    let out = Command::new("sh")
+        .args(["-c", &script])
+        .env("HOME", dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout(&out).contains("/srv/repos"), "{}", stdout(&out));
+}
+
+#[test]
+fn current_only_still_updates_a_non_current_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_remote, work, stale) = remote_work_stale(dir.path());
+    git(&work, &["checkout", "-q", "-b", "side"]);
+    commit_file(&work, "s1");
+    git(&work, &["push", "-q", "origin", "side"]);
+    git(&work, &["checkout", "-q", "main"]);
+    git(&stale, &["fetch", "-q", "origin"]);
+    git(&stale, &["branch", "--track", "side", "origin/side"]);
+    git(&work, &["checkout", "-q", "side"]);
+    commit_file(&work, "s2");
+    git(&work, &["push", "-q", "origin", "side"]);
+    git(&work, &["checkout", "-q", "main"]);
+
+    let out = nine_up(dir.path(), &["update", "-c", stale.to_str().unwrap()]);
+    let text = stdout(&out);
+    assert!(text.contains("side updated:"), "{text}");
+    assert_eq!(sha(&stale, "side"), sha(&work, "side"));
+}
+
+#[test]
+fn current_only_with_a_detached_head_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_remote, _work, stale) = remote_work_stale(dir.path());
+    let head = sha(&stale, "HEAD");
+    git(&stale, &["checkout", "-q", &head]);
+    let out = nine_up(dir.path(), &["update", "-c", stale.to_str().unwrap()]);
+    assert!(
+        stdout(&out).contains("HEAD is detached, so no remote is tracked."),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn a_detached_head_update_still_updates_branches() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_remote, work, stale) = remote_work_stale(dir.path());
+    let head = sha(&stale, "HEAD");
+    git(&stale, &["checkout", "-q", &head]);
+    commit_file(&work, "b");
+    git(&work, &["push", "-q", "origin", "main"]);
+    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let text = stdout(&out);
+    assert!(text.contains("main updated:"), "{text}");
+    assert_eq!(sha(&stale, "main"), sha(&stale, "refs/remotes/origin/main"));
+}
+
+#[test]
+fn prune_removes_a_branch_deleted_on_the_remote() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_remote, work, stale) = remote_work_stale(dir.path());
+    git(&work, &["checkout", "-qb", "feat"]);
+    commit_file(&work, "f");
+    git(&work, &["push", "-q", "origin", "feat"]);
+    git(&work, &["checkout", "-q", "main"]);
+    let first = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    assert!(stdout(&first).contains("feat"), "{}", stdout(&first));
+    assert!(ref_exists(&stale, "refs/remotes/origin/feat"));
+
+    git(&work, &["push", "-q", "origin", "--delete", "feat"]);
+    let out = nine_up(dir.path(), &["update", "--prune", stale.to_str().unwrap()]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(!ref_exists(&stale, "refs/remotes/origin/feat"));
+}
+
+#[test]
+fn dash_leading_branch_and_remote_are_protected_by_separators() {
+    let dir = tempfile::tempdir().unwrap();
+    let (remote, work, stale) = remote_work_stale(dir.path());
+    // A branch named `-x`, created by ref so no flag parsing is involved.
+    git(&work, &["update-ref", "refs/heads/-x", "HEAD"]);
+    git(
+        &work,
+        &["push", "-q", "origin", "refs/heads/-x:refs/heads/-x"],
+    );
+    git(&stale, &["fetch", "-q", "origin"]);
+    git(
+        &stale,
+        &["update-ref", "refs/heads/-x", "refs/remotes/origin/-x"],
+    );
+    git(&stale, &["config", "branch.-x.remote", "origin"]);
+    git(&stale, &["config", "branch.-x.merge", "refs/heads/-x"]);
+    // A remote named `-x`, set by config for the same reason.
+    git(
+        &stale,
+        &["config", "remote.-x.url", remote.to_str().unwrap()],
+    );
+    git(
+        &stale,
+        &[
+            "config",
+            "remote.-x.fetch",
+            "+refs/heads/*:refs/remotes/-x/*",
+        ],
+    );
+    git(&stale, &["fetch", "-q", "--", "-x"]);
+    assert!(ref_exists(&stale, "refs/remotes/-x/main"));
+
+    commit_file(&work, "b");
+    git(&work, &["push", "-q", "origin", "main"]);
+    git(&work, &["update-ref", "refs/heads/-x", "HEAD"]);
+    git(
+        &work,
+        &["push", "-q", "origin", "refs/heads/-x:refs/heads/-x"],
+    );
+
+    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let text = stdout(&out);
+    // The fetch needed `git fetch ... -- -x`: without the separator git
+    // would report an unknown switch and the reference would not move.
+    assert_eq!(sha(&stale, "refs/remotes/-x/main"), sha(&work, "main"));
+    assert!(text.contains("Fetched -x:"), "{text}");
+    // The branch step needed `git branch -f -- -x ...`: git rejects a
+    // dash-leading branch name outright, and the separator is what gets
+    // the name past option parsing to that validation. Without it git
+    // would report an unknown switch instead.
+    assert!(
+        text.contains("-x: fatal: '-x' is not a valid branch name"),
+        "{text}"
+    );
+}
+
+#[test]
+fn exec_depth_limits_the_search() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base");
+    make_repo(&base.join("one"));
+    make_repo(&base.join("a/two"));
+
+    let shallow = nine_up(
+        dir.path(),
+        &["exec", "-t", "1", base.to_str().unwrap(), "--", "true"],
+    );
+    let text = stdout(&shallow);
+    assert!(text.contains("(1 repository)"), "{text}");
+    assert!(text.contains("one"), "{text}");
+    assert!(!text.contains("a/two"), "{text}");
+
+    let deep = nine_up(
+        dir.path(),
+        &["exec", "--depth", "2", base.to_str().unwrap(), "--", "true"],
+    );
+    let text = stdout(&deep);
+    assert!(text.contains("(2 repositories)"), "{text}");
+    assert!(text.contains("a/two"), "{text}");
+}
+
+#[test]
+fn default_bookmark_path_ignores_relative_and_empty_xdg_config_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().to_str().unwrap();
+    let default_file = dir.path().join(".config/gitup/bookmarks");
+    fs::create_dir_all(default_file.parent().unwrap()).unwrap();
+    fs::write(&default_file, "/from-default\n").unwrap();
+
+    for xdg in ["relative/path", ""] {
+        let out = nine_up_env(
+            dir.path(),
+            &["list"],
+            &[("HOME", home), ("XDG_CONFIG_HOME", xdg)],
+        );
+        assert!(
+            stdout(&out).contains("/from-default"),
+            "XDG_CONFIG_HOME={xdg:?}: {}",
+            stdout(&out)
+        );
+    }
+}
+
+#[test]
+fn a_branch_with_a_missing_upstream_reference_is_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_remote, _work, stale) = remote_work_stale(dir.path());
+    git(&stale, &["checkout", "-qb", "ghost"]);
+    commit_file(&stale, "g");
+    git(&stale, &["config", "branch.ghost.remote", "origin"]);
+    git(
+        &stale,
+        &["config", "branch.ghost.merge", "refs/heads/ghost"],
+    );
+    git(&stale, &["checkout", "-q", "main"]);
+    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let text = stdout(&out);
+    assert!(!text.contains("ghost"), "{text}");
+}
+
+#[test]
+fn a_branch_with_no_merge_base_with_its_upstream_is_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_remote, _work, stale) = remote_work_stale(dir.path());
+    git(&stale, &["checkout", "-q", "--orphan", "alien"]);
+    commit_file(&stale, "alien-file");
+    git(&stale, &["config", "branch.alien.remote", "origin"]);
+    git(&stale, &["config", "branch.alien.merge", "refs/heads/main"]);
+    git(&stale, &["checkout", "-q", "main"]);
+    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let text = stdout(&out);
+    assert!(!text.contains("alien"), "{text}");
+}
+
+#[test]
+fn exec_in_a_bare_repository_runs_in_the_repository_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let bare = dir.path().join("bare.git");
+    git(
+        dir.path(),
+        &["init", "-q", "-b", "main", "--bare", bare.to_str().unwrap()],
+    );
+    let out = nine_up(
+        dir.path(),
+        &["exec", bare.to_str().unwrap(), "--", "sh", "-c", "pwd"],
+    );
+    let text = stdout(&out);
+    let canonical = fs::canonicalize(&bare).unwrap();
+    // A trimmed line must equal the path: the header alone contains
+    // it as a substring, so contains() could not fail.
+    let printed = text.lines().any(|line| {
+        line.trim() == bare.display().to_string() || line.trim() == canonical.display().to_string()
+    });
+    assert!(printed, "{text}");
 }

@@ -1,7 +1,7 @@
 # 9up Plan
 
-Status: draft plan for a Rust CLI inspired by `gitup` 0.5.2. Approval is the merge of this plan's pull request
-into `master`. No implementation starts before that merge.
+Status: approved plan for a Rust CLI inspired by `gitup` 0.5.2. The plan was approved by merging its pull
+request into `master`, and the implementation has followed it.
 
 9up is a new tool, not a port. It does the jobs `gitup` (the Python `git-repo-updater` by Ben Kurtovic) does, in
 the same broad shape, because that shape works. Feature parity is the goal: the same jobs and the same bookmark
@@ -103,8 +103,9 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
      status instead.
 5. Branch step. It runs per repository after the fetches, unless `--fetch-only` is set, and covers every
    local branch in name order. `--current-only` does not change it.
-   - A branch with no upstream is skipped. So is a branch whose upstream reference is missing locally, and a
-     branch whose upstream has no merge base with it.
+   - A branch with no upstream is skipped silently and prints nothing. So is a branch whose upstream reference
+     is missing locally, and a branch whose upstream has no merge base with it. Only a branch that cannot
+     fast-forward and a branch blocked by uncommitted changes are skipped with a printed reason.
    - A branch whose upstream is an ancestor of it is up to date. A branch that can fast-forward: the current
      branch updates with `git merge --ff-only`. If the merge fails and its standard error holds both
      `local changes` and `would be overwritten`, the branch is skipped with the uncommitted-changes reason.
@@ -121,7 +122,8 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
 7. Every `git` child process runs through the `Sys` seam (see Git Backend), which pins the locale to English.
    The skip reasons in item 5 match English git output, so the pin is part of the design, not an accident.
 8. Exit codes: 0 for a normal run, 2 for a usage error, and 1 when a bookmark write fails. A failed write
-   also prints an error to standard error.
+   also prints an error to standard error. An unreadable or deleted current directory also exits 1, with
+   the error on standard error, for every command except `list` and `clean`, which do not need it.
 
 ### Output
 
@@ -143,7 +145,9 @@ gets colour codes.
 The bookmark file format is `gitup`'s, so an existing file carries over unchanged. One bookmark per line. The
 default path sits under the platform config directory (the `dirs` crate): `$XDG_CONFIG_HOME/gitup/bookmarks`,
 or `~/.config/gitup/bookmarks` when the variable is unset or empty. A relative value is ignored, as the XDG
-specification requires, so a `~/…` value is ignored rather than expanded. `-b ""` also uses the default path.
+specification requires, so a `~/…` value is ignored rather than expanded. A non-UTF-8 absolute
+`XDG_CONFIG_HOME` is accepted. `-b ""` also uses the default path. When `dirs::config_dir()` returns no
+directory at all, `bookmark_path()` falls back to a relative `.config` path.
 
 - Read: split on `\n`, trim each line, drop empty lines. A missing or unreadable file means no bookmarks.
 - Write: create the parent directory, join the entries with `\n`, with no final newline. Every write
@@ -171,8 +175,8 @@ Feature parity allows these differences. The Feature Spec above is the whole con
 the implementer chooses, and `gitup` is a guide, not a rule.
 
 Where Python crashed or printed a traceback, 9up prints an error line instead: an unconfigured
-`--current-only` remote, a failed `git branch -f`, a command that cannot start, an unreadable directory
-during the search, and a failed bookmark write (which also exits 1).
+`--current-only` remote, a failed `git branch -f`, a command that cannot start, and a failed bookmark
+write (which also exits 1).
 
 | Difference | Reason |
 | --- | --- |
@@ -210,13 +214,13 @@ seam (see Module Breakdown): `RealSys::git`, with its working directory set to `
 | --- | --- |
 | Detect a repository (in `discover.rs`, no git call) | A filesystem test only. A git directory has a `HEAD` file and `objects` and `refs` directories. A linked worktree's admin directory has no `objects`: it holds a `commondir` file instead, and that also counts. A path is a repository when it is a git directory, when its `.git` entry is one, or when its `.git` file's `gitdir:` target is one. A relative `gitdir:` target resolves against the `.git` file's directory. |
 | Working directory and git directory | `git rev-parse --absolute-git-dir` and `git rev-parse --show-toplevel`, run in the repository by `update.rs`. A bare repository has no top level, so its working directory is the git directory. Let git answer these questions. Do not resolve `commondir` files or `core.worktree` by hand. |
-| Fetch | `git fetch --porcelain <remote>`, one call per remote, with `--prune` added when `--prune` is set. Never `--quiet`: it silences the porcelain lines too (probed against git 2.51). The porcelain lines classify by the local reference name: a line with the `*` flag is a new reference, and a line that shows an old and a new value is an update. Lines with the flags `+`, `-`, `t`, `!` or `=` are not reported. A reported name comes from the local reference: strip `refs/remotes/<remote>/` from the front, else drop the first two path parts (which strips `refs/tags/` or `refs/heads/`). A reference with fewer than three parts keeps its full name. |
+| Fetch | `git fetch --porcelain [--prune] -- <remote>`, one call per remote, with `--prune` added when `--prune` is set. Never `--quiet`: it silences the porcelain lines too (probed against git 2.51). The porcelain lines classify by the local reference name: a line with the `*` flag is a new reference, and a line that shows an old and a new value is an update. Lines with the flags `+`, `-`, `t`, `!` or `=` are not reported. A reported name comes from the local reference: strip `refs/remotes/<remote>/` from the front, else drop the first two path parts (which strips `refs/tags/` or `refs/heads/`). A reference with fewer than three parts keeps its full name. |
 | Remotes, URLs and reference lines | One call per repository: `git config --get-regexp ^remote\.`, parsed in memory. It gives each remote's name, URL and `fetch` lines, in configuration order. A remote with no `fetch` lines prints the fetch skip line. |
 | Current branch | `git symbolic-ref -q HEAD`, then strip the `refs/heads/` prefix. A failure means a detached HEAD. Never use `--short`, which prints `heads/main` when a tag `main` exists. |
 | The current-only remote | `git config --get branch.<branch>.remote` and `git config --get branch.<branch>.merge`. Both must be set. Configuration works on an unborn branch, where `for-each-ref` lists nothing. `git config` matches the key as a pattern, so a branch name with pattern characters (a dot, say) can collide with a sibling key; accepted, as this is git's own lookup shape. |
 | Branch snapshot | One call after the fetch: `git for-each-ref --format=%(refname)%00%(objectname)%00%(upstream) refs/heads refs/remotes`. The branch step reads upstreams and SHAs from this snapshot. After each successful `merge` or `branch -f`, set that branch's snapshot SHA to its upstream SHA, so a branch that tracks a local branch sees the move made earlier in the loop. |
 | Update the current branch | `git merge --ff-only <upstream full ref>`. |
-| Update any other branch | `git branch -f <branch> <upstream full ref>`. |
+| Update any other branch | `git branch -f -- <branch> <upstream full ref>`. |
 | Ancestor test | `git merge-base <branch SHA> <upstream SHA>`, from the snapshot. Exit 1 means no merge base. A base equal to the upstream SHA means up to date. A base equal to the branch SHA means a fast-forward is possible. |
 
 Pass SHAs or full reference names to git, never short names. A tag with the same short name would win
@@ -231,7 +235,7 @@ update arrives as a Renovate pull request instead of drifting inside a range.
 | --- | --- |
 | `clap` (derive feature) | Parse the command line: a `Parser` struct with a `Subcommand` enum. |
 | `glob` | Expand the glob patterns that a bookmark path can contain, with `require_literal_leading_dot` set, as Python skipped dot entries. |
-| `walkdir` | The depth-limited directory search in `discover.rs`: sorted entries, symbolic links followed, loop detection. |
+| `walkdir` | The depth-limited directory search in `discover.rs`: symbolic links followed, loop detection. Order comes from `repos.sort_by(name)` in `resolve()`, not from `WalkDir`, which is unsorted. |
 | `dirs` | The platform config and home directories: the XDG rules for the default bookmark path, and the home lookup behind `~` expansion. |
 | `tempfile` (development only) | Temporary directories in integration tests. |
 
@@ -271,6 +275,7 @@ this plan states gets a plan update in the same pull request.
 | `Cargo.lock` | Generated and committed. |
 | `clippy.toml` | `allow-unwrap-in-tests = true` and `allow-expect-in-tests = true`. |
 | `src/main.rs` | Entry point, the `Cli` struct, the command enum, dispatch, colour, and all output. In Step 1 it renders headers, names, comments and path errors. Report rendering arrives with `update.rs` in Step 2. |
+| `src/sys.rs` | The `App` context, the `Sys` trait and `RealSys`. |
 | `src/bookmarks.rs` | The bookmark file: read, normalise, add, delete, clean, save. |
 | `src/discover.rs` | Path expansion, glob expansion, missing-path handling and the depth-limited search. Runs no `git`. |
 | `src/update.rs` | Arrives in Step 2. See Module Breakdown. |
@@ -430,7 +435,7 @@ One pull request per step, in order. Each pull request ends with all four local 
 
 | Step | Content | Crates that arrive |
 | --- | --- | --- |
-| 1 | Crate, lint policy, CI, `Cli` with the bookmark commands, `bookmarks.rs`, `discover.rs`. The bookmark commands work. Discovery prints headers, names, comments and path errors. | `clap`, `glob`, `tempfile` |
+| 1 | Crate, lint policy, CI, `Cli` with the bookmark commands, `bookmarks.rs`, `discover.rs`. The bookmark commands work. Discovery prints headers, names, comments and path errors. | `clap`, `glob`, `walkdir`, `dirs`, `tempfile` |
 | 2 | `update.rs`: `run`, `repo_info`, remotes, fetch, branch logic, and the `update` command with its options. Reports replace the name list under each header. | none |
 | 3 | The `exec` command, the feature check and release prep. | none |
 
@@ -463,7 +468,7 @@ Behaviour tables, one row per case:
 | Commands | Bare `9up` updates the bookmarks and nothing else. Bare `9up <path>` updates only that path. `update` with no paths updates the bookmarks. `add x` adds x and updates nothing. `delete`, `list` and `clean` each do only their own job. `-b` works on every command. |
 | Bookmarks | Add stores the absolute, normalised path. Add of an existing path reports it as already bookmarked. A relative add resolves against the current directory. Delete matches exactly, after normalisation. Delete removes only the first match. Delete of a missing path reports it as not bookmarked. List prints the paths in file order. Clean removes a missing path and keeps an existing one. A comment line survives add and delete, in place. Clean drops it. |
 | Discovery | A repository at the path. Bare repositories: at the path, below the path, and at depth 0. A repository below the path, at each depth from 0 up. A `.git` file (a linked worktree) counts. A directory with no repositories, and an empty directory: header with a count of 0. A file given as a path. A symbolic link to a directory is followed. A broken symbolic link as a path: header with a count of 0. A comment line: never searched, and its text prints with the `#` characters stripped. A glob bookmark: matches expand; `**` recurses; no match means missing. A `*` pattern does not match a dot-directory. The search does not descend into a found repository. Repositories print in name order. Display names: a repository below the base is named by its path relative to the base. A path that is itself a repository is named by its last component. A glob match is named relative to the deepest common parent of the base and the repository. |
-| Update | Up to date. Behind: fast-forward. Ahead. Diverged: skipped, fast-forward not possible. No upstream: skipped. Missing upstream reference: skipped. Local changes block the current branch: skipped with the uncommitted-changes reason. `--current-only`: only the tracked remote fetches, and the branch step still visits every branch. An unborn branch with `--current-only`: the tracked remote fetches, and the branch step visits nothing. `--fetch-only`: no branch step. `--prune`: a branch deleted on the remote disappears locally. Two remotes: both fetch. First fetch fails: the second remote never fetches, and the branch step still runs. A remote with no reference lines: skip line. A new branch and a new tag arrive, named by the naming rule. A detached HEAD. A bare repository. |
+| Update | Up to date. Behind: fast-forward. Ahead. Diverged: skipped, fast-forward not possible. No upstream: skipped silently, prints nothing. Missing upstream reference: skipped silently, prints nothing. No merge base: skipped silently, prints nothing. Local changes block the current branch: skipped with the uncommitted-changes reason. `--current-only`: only the tracked remote fetches, and the branch step still visits every branch. An unborn branch with `--current-only`: the tracked remote fetches, and the branch step visits nothing. `--fetch-only`: no branch step. `--prune`: a branch deleted on the remote disappears locally. Two remotes: both fetch. First fetch fails: the second remote never fetches, and the branch step still runs. A remote with no reference lines: skip line. A new branch and a new tag arrive, named by the naming rule. A detached HEAD. A bare repository. |
 | Exec | The command runs in the working directory. Standard output prints before standard error. The exit status is ignored. A missing command prints the error line. Arguments after `--` reach the command untouched, quotes included. A `--depth` on exec limits the search the way update's does. `exec` with no command is a usage error, and the bookmark file is unchanged. With no bookmarks and no paths, `exec` prints nothing. |
 
 The clippy configuration allows `unwrap` and `expect` in tests only. Test helper functions can use both,

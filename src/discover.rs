@@ -50,7 +50,7 @@ pub fn glob_paths(pattern: &str) -> Vec<PathBuf> {
 /// repositories under it, a comment, or a path error.
 pub fn resolve(input: &str, cwd: &Path, home: Option<&Path>, depth: i32) -> Resolved {
     if input.is_empty() {
-        return Resolved::PathError(format!("{input} doesn't exist."));
+        return Resolved::PathError("doesn't exist.".to_owned());
     }
     let expanded = expand_home(input, home);
     let display = expanded.display().to_string();
@@ -93,6 +93,10 @@ pub fn resolve(input: &str, cwd: &Path, home: Option<&Path>, depth: i32) -> Reso
             for matched in &matches {
                 repos.extend(search(matched, depth, &prefix));
             }
+            // A `**` pattern matches both an intermediate directory and
+            // the repository below it, so the same path can appear twice.
+            let mut seen = std::collections::HashSet::new();
+            repos.retain(|repo| seen.insert(repo.path.clone()));
             repos.sort_by(|a, b| a.name.cmp(&b.name));
             Resolved::Repos(repos)
         }
@@ -117,9 +121,12 @@ fn has_glob_chars(input: &str) -> bool {
 /// A git directory: a HEAD file, a refs directory, and an objects
 /// directory or a commondir file (a linked worktree's admin directory).
 fn is_git_dir(dir: &Path) -> bool {
+    // A linked worktree's admin directory holds HEAD and commondir but
+    // no refs directory (real git creates none), so commondir alone is
+    // enough; a normal or bare directory pairs refs with objects.
     dir.join("HEAD").is_file()
-        && dir.join("refs").is_dir()
-        && (dir.join("objects").is_dir() || dir.join("commondir").is_file())
+        && (dir.join("commondir").is_file()
+            || (dir.join("refs").is_dir() && dir.join("objects").is_dir()))
 }
 
 /// Whether a path is a repository, by filesystem test only. Discovery
@@ -307,7 +314,7 @@ mod tests {
         );
 
         let admin = dir.path().join("admin");
-        fs::create_dir_all(admin.join("refs")).unwrap();
+        fs::create_dir_all(&admin).unwrap();
         fs::write(admin.join("HEAD"), "ref: refs/heads/main\n").unwrap();
         fs::write(admin.join("commondir"), "../..\n").unwrap();
         let work = dir.path().join("work");
@@ -336,6 +343,44 @@ mod tests {
             Resolved::PathError(message) => assert!(message.contains("isn't a repository")),
             _ => panic!("not an error"),
         }
+    }
+
+    #[test]
+    fn a_double_star_glob_lists_each_repository_once() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a/one", "b/two"] {
+            let repo = dir.path().join("base").join(name);
+            fs::create_dir_all(&repo).unwrap();
+            fake_repo(&repo);
+        }
+        let pattern = format!("{}/base/**", dir.path().display());
+        let resolved = resolve(&pattern, dir.path(), None, -1);
+        let names = resolved_names(&resolved);
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert_eq!(names, ["a/one", "b/two"]);
+    }
+
+    #[test]
+    fn a_symbolic_link_cycle_terminates() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let repo = base.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        fake_repo(&repo);
+        // A repository only reachable by following a symbolic link:
+        // without follow_links(true) it is never found.
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fake_repo(&outside);
+        // A cycle: base/loop points back at base. walkdir reports the
+        // loop as an error entry, which search() skips.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&base, base.join("loop")).unwrap();
+            std::os::unix::fs::symlink(&outside, base.join("linked")).unwrap();
+        }
+        let resolved = resolve(base.to_str().unwrap(), dir.path(), None, -1);
+        assert_eq!(resolved_names(&resolved), ["linked", "repo"]);
     }
 
     #[test]

@@ -206,7 +206,7 @@ pub fn update_repo(sys: &dyn Sys, path: &Path, name: &str, options: &Options) ->
             outcome,
         });
         if failed {
-            break; // The first failed fetch stops this repository's fetches.
+            break;
         }
     }
     if !options.fetch_only {
@@ -330,7 +330,7 @@ fn branch_step(
                         .find(|line| line.starts_with("error:") || line.starts_with("fatal:"))
                         .map(str::to_owned)
                         .unwrap_or_else(|| {
-                            format!("git branch -f {name} failed: {}", output.status)
+                            format!("git branch -f {name} failed with {}.", output.status)
                         });
                     steps.push(Step::Branch {
                         name,
@@ -498,11 +498,22 @@ mod tests {
     /// flows, with the fetch scripted per test.
     struct StubSys {
         fetch: FetchStub,
+        prune_seen: std::cell::Cell<bool>,
+    }
+
+    impl StubSys {
+        fn new(fetch: FetchStub) -> Self {
+            Self {
+                fetch,
+                prune_seen: std::cell::Cell::new(false),
+            }
+        }
     }
 
     enum FetchStub {
         CannotStart,
         Fails,
+        Succeeds,
     }
 
     impl Sys for StubSys {
@@ -513,14 +524,23 @@ mod tests {
                     "remote.origin.url /srv/git.git\nremote.origin.fetch +refs/heads/*:refs/remotes/origin/*\n",
                     "",
                 )),
+                ["symbolic-ref", "-q", "HEAD"] => Ok(output(0, "refs/heads/main\n", "")),
+                ["config", "--get", "branch.main.remote"] => Ok(output(0, "origin\n", "")),
+                ["config", "--get", "branch.main.merge"] => Ok(output(0, "refs/heads/main\n", "")),
                 ["rev-parse", "--absolute-git-dir"] => Ok(output(0, "/repo/.git\n", "")),
                 ["rev-parse", "--show-toplevel"] => Ok(output(0, "/repo\n", "")),
-                ["fetch", ..] => match self.fetch {
-                    FetchStub::CannotStart => {
-                        Err(io::Error::new(io::ErrorKind::NotFound, "no git here"))
+                ["fetch", ..] => {
+                    if argv.contains(&"--prune") {
+                        self.prune_seen.set(true);
                     }
-                    FetchStub::Fails => Ok(output(256, "", "fatal: boom\n")),
-                },
+                    match self.fetch {
+                        FetchStub::CannotStart => {
+                            Err(io::Error::new(io::ErrorKind::NotFound, "no git here"))
+                        }
+                        FetchStub::Fails => Ok(output(256, "", "fatal: boom\n")),
+                        FetchStub::Succeeds => Ok(output(0, "", "")),
+                    }
+                }
                 _ => Ok(output(0, "", "")),
             }
         }
@@ -532,9 +552,7 @@ mod tests {
 
     #[test]
     fn a_fetch_that_cannot_start_is_an_error_step() {
-        let sys = StubSys {
-            fetch: FetchStub::CannotStart,
-        };
+        let sys = StubSys::new(FetchStub::CannotStart);
         let options = Options {
             current_only: false,
             fetch_only: true,
@@ -554,9 +572,7 @@ mod tests {
 
     #[test]
     fn a_failed_fetch_reports_gits_error_lines() {
-        let sys = StubSys {
-            fetch: FetchStub::Fails,
-        };
+        let sys = StubSys::new(FetchStub::Fails);
         let options = Options {
             current_only: false,
             fetch_only: true,
@@ -576,14 +592,45 @@ mod tests {
 
     #[test]
     fn a_command_that_cannot_start_is_an_error_report() {
-        let sys = StubSys {
-            fetch: FetchStub::Fails,
-        };
+        let sys = StubSys::new(FetchStub::Fails);
         let report = exec_repo(&sys, Path::new("/repo"), "repo", &["frobnicate".to_owned()]);
         assert_eq!(
             report.error.as_deref(),
             Some("Could not run frobnicate: no such file")
         );
+    }
+
+    #[test]
+    fn current_only_fetches_the_tracked_remote_and_prune_reaches_fetch() {
+        let sys = StubSys::new(FetchStub::Succeeds);
+        let options = Options {
+            current_only: true,
+            fetch_only: true,
+            prune: true,
+        };
+        let report = update_repo(&sys, Path::new("/repo"), "repo", &options);
+        match &report.steps[..] {
+            [
+                Step::Fetch {
+                    remote,
+                    outcome: FetchOutcome::UpToDate,
+                },
+            ] => assert_eq!(remote, "origin"),
+            steps => panic!("unexpected steps: {}", steps.len()),
+        }
+        assert!(sys.prune_seen.get(), "fetch argv must carry --prune");
+    }
+
+    #[test]
+    fn without_prune_fetch_has_no_prune_flag() {
+        let sys = StubSys::new(FetchStub::Succeeds);
+        let options = Options {
+            current_only: false,
+            fetch_only: true,
+            prune: false,
+        };
+        let _ = update_repo(&sys, Path::new("/repo"), "repo", &options);
+        assert!(!sys.prune_seen.get());
     }
 
     #[test]
