@@ -17,7 +17,7 @@ pub enum Resolved {
 
 /// Expand a leading `~` or `~/` to the home directory.
 pub fn expand_home(path: &str) -> PathBuf {
-    let Some(home) = std::env::home_dir() else {
+    let Some(home) = dirs::home_dir() else {
         return PathBuf::from(path);
     };
     if path == "~" {
