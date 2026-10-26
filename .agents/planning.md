@@ -274,7 +274,6 @@ this plan states gets a plan update in the same pull request.
 | `.gitignore` | `/target/` and `/.scratchpad/`. |
 | `.github/workflows/lint.yaml` | Exists, with the `markdown` job. Step 1 adds the `rust` job. Details under CI Workflows. |
 | `.github/workflows/test.yaml` | One `test` job: `cargo test --locked` on `ubuntu-latest` and `macos-latest`. |
-| `CLAUDE.md` | One line: `@AGENTS.md`. |
 
 Already in place, unchanged unless a step says otherwise: `rust-toolchain.toml`, the `claude.yaml` and
 `zizmor.yaml` workflows, `mise.toml` (pins node, markdownlint and zizmor) and `.markdownlint-cli2.jsonc`.
