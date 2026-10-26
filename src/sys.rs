@@ -11,7 +11,7 @@ pub struct App<'a> {
     pub sys: Box<dyn Sys>,
     pub cwd: PathBuf,
     pub home: Option<PathBuf>,
-    pub bookmark_file: PathBuf,
+    pub config_file: PathBuf,
     pub colour: bool,
     pub out: &'a mut (dyn io::Write + 'a),
 }

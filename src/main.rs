@@ -1,4 +1,4 @@
-mod bookmarks;
+mod config;
 mod discover;
 mod sys;
 mod update;
@@ -16,9 +16,9 @@ use clap::{Args, Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "9up", version)]
 struct Cli {
-    /// The bookmark file to use. An empty value uses the default path.
-    #[arg(short, long, global = true, value_name = "PATH")]
-    bookmark_file: Option<String>,
+    /// The config file to use. An empty value uses the default path.
+    #[arg(short = 'C', long = "config", global = true, value_name = "PATH")]
+    config_file: Option<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -26,7 +26,7 @@ struct Cli {
 
 #[derive(Args)]
 struct UpdateArgs {
-    /// Update the repositories under these paths. No paths means the bookmarks.
+    /// Update the repositories under these paths. No paths means the configured repositories.
     paths: Vec<String>,
 
     /// Fetch only the remote the current branch tracks.
@@ -63,27 +63,27 @@ enum Command {
     /// Update repositories. The default command.
     Update(UpdateArgs),
 
-    /// Add paths to the bookmark file.
+    /// Add paths to the config file.
     Add {
         #[arg(num_args = 1..)]
         paths: Vec<String>,
     },
 
-    /// Delete paths from the bookmark file.
+    /// Delete paths from the config file.
     Delete {
         #[arg(num_args = 1..)]
         paths: Vec<String>,
     },
 
-    /// List the bookmarks.
+    /// List the configured paths.
     List,
 
-    /// Remove bookmarks whose paths no longer exist.
+    /// Remove configured paths that no longer exist.
     Clean,
 
     /// Run a command in each repository.
     Exec {
-        /// Run in the repositories under these paths. No paths means the bookmarks.
+        /// Run in the repositories under these paths. No paths means the configured repositories.
         paths: Vec<String>,
 
         /// Search depth below each path. A negative value means no limit.
@@ -117,7 +117,7 @@ fn insert_update(mut args: Vec<OsString>) -> Vec<OsString> {
             after_separator = true;
             break;
         }
-        if token == "-b" || token == "--bookmark-file" {
+        if token == "-C" || token == "--config" {
             index += 2;
             continue;
         }
@@ -181,8 +181,8 @@ fn main() -> ExitCode {
     }
     // The composition root: every service and resolved value is built
     // here and passed down in the context.
-    // `list` and `clean` never need the cwd (bookmarks are absolute),
-    // so a deleted or unreadable cwd must not fail them.
+    // `list` and `clean` never need the cwd (configured paths are
+    // absolute), so a deleted or unreadable cwd must not fail them.
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
         Err(err) => match &cli.command {
@@ -194,12 +194,12 @@ fn main() -> ExitCode {
         },
     };
     let config_dir = dirs::config_dir();
-    let bookmark_file = bookmark_path(&cli, config_dir.as_deref());
+    let config_file = config_path(&cli, config_dir.as_deref());
     let mut app = App {
         sys: Box::new(RealSys),
         cwd,
         home: dirs::home_dir(),
-        bookmark_file,
+        config_file,
         colour: io::stdout().is_terminal(),
         out: &mut out,
     };
@@ -232,45 +232,45 @@ fn run(app: &mut App, cli: &Cli) -> io::Result<ExitCode> {
 
 fn add(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
     let out = &mut *app.out;
-    let mut entries = bookmarks::load(&*app.sys, &app.bookmark_file);
+    let mut entries = config::load(&*app.sys, &app.config_file)?;
     for raw in paths {
-        let normalized = bookmarks::normalize(raw, &app.cwd);
-        if bookmarks::has(&entries, &normalized) {
-            writeln!(out, "{normalized} is already bookmarked.")?;
+        let normalized = config::normalize(raw, &app.cwd);
+        if config::has(&entries, &normalized) {
+            writeln!(out, "{normalized} is already in the config file.")?;
         } else {
             writeln!(out, "Added {normalized}.")?;
             entries.push(normalized);
         }
     }
-    bookmarks::save(&*app.sys, &app.bookmark_file, &entries)?;
+    config::save(&*app.sys, &app.config_file, &entries)?;
     Ok(ExitCode::SUCCESS)
 }
 
 fn delete(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
     let out = &mut *app.out;
-    let mut entries = bookmarks::load(&*app.sys, &app.bookmark_file);
+    let mut entries = config::load(&*app.sys, &app.config_file)?;
     let mut changed = false;
     for raw in paths {
-        let normalized = bookmarks::normalize(raw, &app.cwd);
+        let normalized = config::normalize(raw, &app.cwd);
         if let Some(index) = entries.iter().position(|entry| entry == &normalized) {
             entries.remove(index);
             changed = true;
             writeln!(out, "Deleted {normalized}.")?;
         } else {
-            writeln!(out, "{normalized} is not bookmarked.")?;
+            writeln!(out, "{normalized} is not in the config file.")?;
         }
     }
     if changed {
-        bookmarks::save(&*app.sys, &app.bookmark_file, &entries)?;
+        config::save(&*app.sys, &app.config_file, &entries)?;
     }
     Ok(ExitCode::SUCCESS)
 }
 
 fn list(app: &mut App) -> io::Result<ExitCode> {
     let out = &mut *app.out;
-    let entries = bookmarks::load(&*app.sys, &app.bookmark_file);
+    let entries = config::load(&*app.sys, &app.config_file)?;
     if entries.is_empty() {
-        writeln!(out, "No bookmarks.")?;
+        writeln!(out, "No repositories configured.")?;
     }
     for entry in &entries {
         writeln!(out, "{entry}")?;
@@ -295,9 +295,12 @@ fn paint(enabled: bool, code: &str, text: &str) -> String {
 fn update(app: &mut App, args: &UpdateArgs) -> io::Result<ExitCode> {
     let out = &mut *app.out;
     let inputs: Vec<String> = if args.paths.is_empty() {
-        let entries = bookmarks::load(&*app.sys, &app.bookmark_file);
+        let entries = config::load(&*app.sys, &app.config_file)?;
         if entries.is_empty() {
-            writeln!(out, "No bookmarks. Add one with `9up add <path>`.")?;
+            writeln!(
+                out,
+                "No repositories configured. Add one with `9up add <path>`."
+            )?;
             return Ok(ExitCode::SUCCESS);
         }
         entries
@@ -348,7 +351,7 @@ fn print_header(
     count: usize,
 ) -> io::Result<()> {
     let expanded = discover::expand_home(input, home);
-    let header = bookmarks::normalize(&expanded.display().to_string(), cwd);
+    let header = config::normalize(&expanded.display().to_string(), cwd);
     let noun = if count == 1 {
         "repository"
     } else {
@@ -433,14 +436,20 @@ fn render_report(report: &update::Report, colour: bool, out: &mut dyn Write) -> 
 
 fn clean(app: &mut App) -> io::Result<ExitCode> {
     let out = &mut *app.out;
-    let entries = bookmarks::load(&*app.sys, &app.bookmark_file);
+    let entries = config::load(&*app.sys, &app.config_file)?;
     if entries.is_empty() {
-        writeln!(out, "No bookmarks.")?;
+        writeln!(out, "No repositories configured.")?;
         return Ok(ExitCode::SUCCESS);
     }
     let mut kept = Vec::new();
     let mut removed = false;
     for entry in &entries {
+        // A comment entry is not a path, so the liveness test below
+        // cannot judge it. The plan keeps it.
+        if discover::comment_text(entry).is_some() {
+            kept.push(entry.clone());
+            continue;
+        }
         let expanded = discover::expand_home(entry, app.home.as_deref());
         let live =
             expanded.is_dir() || !discover::glob_paths(&expanded.display().to_string()).is_empty();
@@ -452,17 +461,17 @@ fn clean(app: &mut App) -> io::Result<ExitCode> {
         }
     }
     if removed {
-        bookmarks::save(&*app.sys, &app.bookmark_file, &kept)?;
+        config::save(&*app.sys, &app.config_file, &kept)?;
     } else {
         writeln!(out, "Nothing to clean.")?;
     }
     Ok(ExitCode::SUCCESS)
 }
 
-/// The bookmark file for this run: the `-b` value, or the default path
-/// under the XDG config directory.
-fn bookmark_path(cli: &Cli, config_dir: Option<&Path>) -> PathBuf {
-    if let Some(path) = cli.bookmark_file.as_deref().filter(|path| !path.is_empty()) {
+/// The config file for this run: the `-C` value, or the default path
+/// under the platform config directory.
+fn config_path(cli: &Cli, config_dir: Option<&Path>) -> PathBuf {
+    if let Some(path) = cli.config_file.as_deref().filter(|path| !path.is_empty()) {
         return PathBuf::from(path);
     }
     // The config directory comes from `dirs` (see main): on Linux a
@@ -471,14 +480,14 @@ fn bookmark_path(cli: &Cli, config_dir: Option<&Path>) -> PathBuf {
     let config = config_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(".config"));
-    config.join("gitup").join("bookmarks")
+    config.join("9up").join("config.toml")
 }
 
 fn exec(app: &mut App, paths: &[String], depth: i32, command: &[String]) -> io::Result<ExitCode> {
     let out = &mut *app.out;
     let inputs: Vec<String> = if paths.is_empty() {
-        // No hint here: an exec run with no bookmarks prints nothing.
-        bookmarks::load(&*app.sys, &app.bookmark_file)
+        // No hint here: an exec run with no configured paths prints nothing.
+        config::load(&*app.sys, &app.config_file)?
     } else {
         paths.to_vec()
     };
@@ -545,8 +554,12 @@ mod tests {
         assert_eq!(shim(&["9up"]), ["9up"]);
         assert_eq!(shim(&["9up", "list"]), ["9up", "list"]);
         assert_eq!(
-            shim(&["9up", "-b", "f", "list"]),
-            ["9up", "-b", "f", "list"]
+            shim(&["9up", "-C", "f", "list"]),
+            ["9up", "-C", "f", "list"]
+        );
+        assert_eq!(
+            shim(&["9up", "--config", "f", "list"]),
+            ["9up", "--config", "f", "list"]
         );
         assert_eq!(shim(&["9up", "--version"]), ["9up", "--version"]);
         assert_eq!(shim(&["9up", "help"]), ["9up", "help"]);
@@ -561,10 +574,44 @@ mod tests {
         assert_eq!(shim(&["9up", "-t=3"]), ["9up", "update", "-t=3"]);
         assert_eq!(shim(&["9up", "--depth=2"]), ["9up", "update", "--depth=2"]);
         assert_eq!(
-            shim(&["9up", "-b", "f", "-c"]),
-            ["9up", "update", "-b", "f", "-c"]
+            shim(&["9up", "-C", "f", "-c"]),
+            ["9up", "update", "-C", "f", "-c"]
         );
-        assert_eq!(shim(&["9up", "-b", "f"]), ["9up", "-b", "f"]);
+        assert_eq!(
+            shim(&["9up", "--config", "f", "-c"]),
+            ["9up", "update", "--config", "f", "-c"]
+        );
+        assert_eq!(shim(&["9up", "-C", "f"]), ["9up", "-C", "f"]);
+    }
+
+    #[test]
+    fn config_path_uses_the_flag_then_the_platform_directory() {
+        let plain = Cli {
+            config_file: None,
+            command: None,
+        };
+        assert_eq!(
+            config_path(&plain, Some(Path::new("/cfg"))),
+            PathBuf::from("/cfg/9up/config.toml")
+        );
+        // No platform directory at all: the relative fallback.
+        assert_eq!(
+            config_path(&plain, None),
+            PathBuf::from(".config/9up/config.toml")
+        );
+        let flagged = Cli {
+            config_file: Some("mine.toml".to_owned()),
+            command: None,
+        };
+        assert_eq!(config_path(&flagged, None), PathBuf::from("mine.toml"));
+        let empty = Cli {
+            config_file: Some(String::new()),
+            command: None,
+        };
+        assert_eq!(
+            config_path(&empty, Some(Path::new("/cfg"))),
+            PathBuf::from("/cfg/9up/config.toml")
+        );
     }
 
     #[test]
