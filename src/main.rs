@@ -1,5 +1,6 @@
 mod bookmarks;
 mod discover;
+mod update;
 
 use std::env;
 use std::ffi::OsString;
@@ -232,6 +233,7 @@ fn list(path: &Path, out: &mut impl Write) -> io::Result<ExitCode> {
 const BOLD_WHITE: &str = "\u{1b}[1;37m";
 const BOLD_GREEN: &str = "\u{1b}[1;32m";
 const RED: &str = "\u{1b}[31m";
+const CYAN: &str = "\u{1b}[36m";
 const RESET: &str = "\u{1b}[0m";
 
 fn paint(enabled: bool, code: &str, text: &str) -> String {
@@ -242,7 +244,6 @@ fn paint(enabled: bool, code: &str, text: &str) -> String {
     }
 }
 
-/// Step 1 renders discovery only. Step 2 replaces each name with a report.
 fn update(args: &UpdateArgs, bookmark_file: &Path, out: &mut impl Write) -> io::Result<ExitCode> {
     let cwd = env::current_dir()?;
     let inputs: Vec<String> = if args.paths.is_empty() {
@@ -272,8 +273,14 @@ fn update(args: &UpdateArgs, bookmark_file: &Path, out: &mut impl Write) -> io::
                     "{} ({count} {noun})",
                     paint(colour, BOLD_WHITE, &header)
                 );
+                let options = update::Options {
+                    current_only: args.current_only,
+                    fetch_only: args.fetch_only,
+                    prune: args.prune,
+                };
                 for repo in &repos {
-                    let _ = writeln!(out, "  {}", paint(colour, BOLD_GREEN, &repo.name));
+                    let report = update::update_repo(&repo.path, &repo.name, &options);
+                    render_report(&report, colour, out);
                 }
             }
             discover::Resolved::Comment(text) => {
@@ -287,6 +294,58 @@ fn update(args: &UpdateArgs, bookmark_file: &Path, out: &mut impl Write) -> io::
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn red_line(out: &mut impl Write, colour: bool, text: &str) {
+    let _ = writeln!(out, "    {}", paint(colour, RED, text));
+}
+
+fn render_report(report: &update::Report, colour: bool, out: &mut impl Write) {
+    let _ = writeln!(out, "  {}", paint(colour, BOLD_GREEN, &report.name));
+    for step in &report.steps {
+        match step {
+            update::Step::Fetch { remote, outcome } => match outcome {
+                update::FetchOutcome::Changed(groups) => {
+                    // Groups print in a fixed order, not fetch order.
+                    let order = [
+                        update::Kind::NewBranch,
+                        update::Kind::NewTag,
+                        update::Kind::BranchUpdate,
+                    ];
+                    let parts: Vec<String> = order
+                        .iter()
+                        .filter_map(|kind| groups.iter().find(|(group_kind, _)| group_kind == kind))
+                        .map(|(kind, names)| {
+                            let label = match kind {
+                                update::Kind::NewBranch => "new branches",
+                                update::Kind::NewTag => "new tags",
+                                update::Kind::BranchUpdate => "updated references",
+                            };
+                            format!("{label}: {}", names.join(", "))
+                        })
+                        .collect();
+                    let line = format!("Fetched {remote}: {}.", parts.join("; "));
+                    let _ = writeln!(out, "    {}", paint(colour, CYAN, &line));
+                }
+                update::FetchOutcome::UpToDate => {
+                    let _ = writeln!(out, "    {remote} is up to date.");
+                }
+                update::FetchOutcome::NoRefspec => {
+                    red_line(
+                        out,
+                        colour,
+                        &format!("{remote} has no fetch refspec. Skipped."),
+                    );
+                }
+                update::FetchOutcome::Error(lines) => {
+                    for line in lines {
+                        red_line(out, colour, line);
+                    }
+                }
+            },
+            update::Step::Error(message) => red_line(out, colour, message),
+        }
+    }
 }
 
 fn clean(path: &Path, out: &mut impl Write) -> io::Result<ExitCode> {
