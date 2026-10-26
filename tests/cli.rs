@@ -568,3 +568,71 @@ fn a_branch_tracking_a_local_branch_sees_its_move() {
     assert!(text.contains("b-follow updated:"), "{text}");
     assert_eq!(sha(&stale, "b-follow"), sha(&stale, "origin/main"));
 }
+
+#[test]
+fn exec_runs_in_each_repository_and_ignores_the_exit_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    git(
+        dir.path(),
+        &["init", "-q", "-b", "main", repo.to_str().unwrap()],
+    );
+
+    let out = nine_up(
+        dir.path(),
+        &[
+            "exec",
+            repo.to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            "echo from $(basename $(pwd)); echo to-stderr >&2; exit 3",
+        ],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let text = stdout(&out);
+    let stdout_at = text.find("from repo").unwrap();
+    let stderr_at = text.find("to-stderr").unwrap();
+    assert!(stdout_at < stderr_at, "{text}");
+
+    let missing = nine_up(
+        dir.path(),
+        &["exec", repo.to_str().unwrap(), "--", "/nonexistent-9up/cmd"],
+    );
+    assert!(stdout(&missing).contains("Could not run /nonexistent-9up/cmd:"));
+}
+
+#[test]
+fn exec_with_no_command_is_a_usage_error_and_touches_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("bookmarks");
+    fs::write(&file, "/somewhere").unwrap();
+    let out = nine_up(dir.path(), &["-b", file.to_str().unwrap(), "exec"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+    assert_eq!(fs::read_to_string(&file).unwrap(), "/somewhere");
+}
+
+#[test]
+fn exec_with_no_bookmarks_prints_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("bookmarks");
+    let out = nine_up(
+        dir.path(),
+        &["-b", file.to_str().unwrap(), "exec", "--", "true"],
+    );
+    assert_eq!(stdout(&out), "9up\n\n");
+}
+
+#[test]
+fn depth_uses_the_short_flag_t() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    git(
+        dir.path(),
+        &["init", "-q", "-b", "main", repo.to_str().unwrap()],
+    );
+    let out = nine_up(dir.path(), &["update", "-t", "-1", repo.to_str().unwrap()]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(stdout(&out).contains("repo (1 repository)"));
+}
