@@ -8,6 +8,24 @@ Update many git repositories at once.
 cargo install --path .
 ```
 
+## Usage
+
+```sh
+9up                          # update every bookmarked repository
+9up ~/src ~/work             # update the repositories under these paths
+9up update -c ~/src          # fetch only the remote the current branch tracks
+9up add ~/src ~/work         # bookmark paths
+9up delete ~/src             # remove a bookmark
+9up list                     # show the bookmarks
+9up clean                    # drop bookmarks whose paths no longer exist
+9up exec ~/src -- git status # run a command in each repository under a path
+```
+
+Bookmarks live one path per line in `$XDG_CONFIG_HOME/gitup/bookmarks`, or `~/.config/gitup/bookmarks` when
+the variable is unset — the format is `gitup`'s, so an existing file carries over. Pass `-b <path>` to use a
+different file, or `-b ""` for the default. Update takes `--current-only`, `--fetch-only`, `--prune` and
+`--depth <n>` (short `-t`; negative means no limit). `exec` takes `--depth` too.
+
 ## Development
 
 Run `mise install` for the non-Rust tools. Then check your change:

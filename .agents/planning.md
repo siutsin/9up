@@ -182,6 +182,7 @@ during the search, and a failed bookmark write (which also exits 1).
 | The current branch's upstream comes from git's own `%(upstream)` value. | One source instead of a reconstruction. |
 | A `**` pattern in a bookmark path is recursive. | The `glob` crate's semantics. |
 | New references after a fetch are classified by the local reference name. | Clearer than the remote-side name. |
+| In a bare repository, the HEAD branch updates like any other. | `gitup` skips it as "not possible to fast-forward" and leaves it stale (probed against 0.5.2); `git branch -f` on a bare HEAD branch works, so the update is safe. |
 | A fetch does not recurse into submodules. | One less flag until a user needs it. |
 | `$VAR` never expands, in any path. | The expansion was a side effect, not a feature. |
 | Output prints per repository when the repository is done. No live fetch counters. | Milestone 2 concurrency needs this shape anyway. |
