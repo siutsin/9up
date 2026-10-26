@@ -19,5 +19,5 @@ markdownlint-cli2 '**/*.md'
 
 ## Credit
 
-This is a Rust port of [`gitup`](https://github.com/earwig/git-repo-updater) (git-repo-updater) 0.5.2, the Python tool by
+9up is inspired by [`gitup`](https://github.com/earwig/git-repo-updater) (git-repo-updater) 0.5.2, the Python tool by
 Ben Kurtovic.

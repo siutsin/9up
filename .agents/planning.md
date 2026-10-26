@@ -1,426 +1,289 @@
 # 9up Plan
 
-Status: draft plan for a Rust port of `gitup` 0.5.2. Approval is the merge of this plan's pull request into `master`. No
-implementation starts before that merge.
+Status: draft plan for a Rust CLI inspired by `gitup` 0.5.2. Approval is the merge of this plan's pull request
+into `master`. No implementation starts before that merge.
 
-## Goal and Scope
+9up is a new tool, not a port. It does the jobs `gitup` (the Python `git-repo-updater` by Ben Kurtovic) does, in
+the same broad shape, because that shape works. Feature parity is the goal: the same jobs and the same bookmark
+file. Everything else is 9up's own, and idiomatic Rust wins: where `gitup`'s shape and idiomatic Rust conflict,
+the plan follows Rust.
 
-| Item         | Decision                                                                                                   |
-|--------------|------------------------------------------------------------------------------------------------------------|
-| Problem      | Python `gitup` updates repositories one at a time. You run it often, so the wait adds up                   |
-| Milestone 1  | Feature parity with Python `gitup` 0.5.2. Sequential. The same flags and output                            |
-| Milestone 2  | Concurrency. Not planned in detail here, but the design must not block it                                  |
-| Names        | Repository `9up`. Package `nine-up`, because Cargo rejects a name that starts with a digit. Binary `gitup` |
-| Version      | The first version is `0.1.0`                                                                               |
-| Out of scope | Releases, Homebrew formula, Windows, new features                                                          |
+## Goal And Scope
 
-Source: the upstream tag `v0.5.2` of `https://github.com/earwig/git-repo-updater`, in `gitup/*.py`. It has `cli.py`,
-`config.py`, `update.py` and `migrate.py`. The Parity Spec below is the source of truth. The Deliberate Deviations are the
-only allowed differences from the Python source. The Python source decides everything else.
+| Item | Decision |
+| --- | --- |
+| Problem | Keep many local git repositories current without visiting each one. |
+| Milestone 1 | The same jobs as `gitup` 0.5.2: update repositories under given paths, update bookmarked repositories, manage the bookmark file, and run a command in each repository. Runs sequentially. |
+| Milestone 2 | Concurrency. Not planned in detail here, and the architecture must not block it. |
+| Repository name | `9up` |
+| Cargo package name | `nine-up`. Cargo rejects a package name that starts with a digit. |
+| Binary name | `9up`. A binary file name can start with a digit. |
+| Version | `0.1.0` |
+| Out of scope | Releases, a Homebrew formula, Windows support, and any feature `gitup` does not have. |
 
-## Parity Spec
+Two terms run through the plan. A path is a directory passed on the command line, or a bookmark. A repository
+is a git repository found under a path. For a bare repository, the repository itself is the path's only
+repository.
 
-### Flags
+## Feature Spec
 
-| Flag                          | Meaning                                                                  | Milestone 1          |
-|-------------------------------|--------------------------------------------------------------------------|----------------------|
-| `path...`                     | Update this repo, or every repo below it                                 | Keep                 |
-| `-u`, `--update`              | Also update all bookmarks                                                | Keep                 |
-| `-t`, `--depth n`             | Search depth. Default `3`. `0` means no search. Negative means unlimited | Keep                 |
-| `-c`, `--current-only`        | Fetch only the remote that the current branch tracks                     | Keep                 |
-| `-f`, `--fetch-only`          | Fetch only. Do not fast-forward branches                                 | Keep                 |
-| `-p`, `--prune`               | Pass `--prune` to each fetch                                             | Keep                 |
-| `-a`, `--add path...`         | Add bookmarks                                                            | Keep                 |
-| `-d`, `--delete path...`      | Delete bookmarks                                                         | Keep                 |
-| `-l`, `--list`                | List bookmarks                                                           | Keep                 |
-| `-n`, `--clean`, `--cleanup`  | Delete bookmarks that point to nothing                                   | Keep                 |
-| `-b`, `--bookmark-file path`  | Use another bookmark file                                                | Keep, value required |
-| `-e`, `--exec`, `--batch cmd` | Run a command in each repo instead of updating                           | Keep                 |
-| `-h`, `--help`                | Print help                                                               | Keep                 |
-| `-v`, `--version`             | Print version                                                            | Keep                 |
-| `--selftest`                  | Run the Python test suite                                                | Drop                 |
+This section is the contract. Implementation follows it, and the tests derive from it.
 
-Long options accept any unique prefix, as argparse does. So `--fetch` means `--fetch-only`.
+### Commands
+
+Subcommands, the idiomatic clap shape. One verb per run.
+
+| Invocation | Job |
+| --- | --- |
+| `9up [paths...]` | Update the repositories under the paths, or the bookmarked repositories when no path is given. The bare form of `update`, with the same options. |
+| `9up update [paths...]` | The same, spelled out. |
+| `9up add <paths...>` | Add paths to the bookmark file. |
+| `9up delete <paths...>` | Delete paths from the bookmark file. |
+| `9up list` | List the bookmarks. |
+| `9up clean` | Remove bookmarks whose paths no longer exist. |
+| `9up exec [paths...] -- <command...>` | Run the command in each repository under the paths, or in the bookmarked repositories when no path is given. Everything after `--` is the command and its arguments, as the shell split them. Takes `--depth`, with the same meaning as on `update`. |
+
+A path named like a command (`list`, `clean`, `add`, `delete`, `exec`, `update`) cannot use the bare form.
+Spell it out instead: `9up update list`, or `9up ./list`.
+
+The `update` options:
+
+| Option | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `-c`, `--current-only` | bool | `false` | Fetch only the remote that the current branch tracks. |
+| `-f`, `--fetch-only` | bool | `false` | Only fetch. Do not update any branch. |
+| `-p`, `--prune` | bool | `false` | Pass `--prune` to each fetch. |
+| `-t`, `--depth` | value | `3` | Search depth below each path. Negative values search with no limit. The path itself is always checked, at any depth value. |
+
+One global option, accepted by every command: `-b`, `--bookmark-file <path>`, the bookmark file to use. The
+value is required. An empty value uses the default path (see Bookmark File).
+
+One verb per run is the one combined-invocation loss against `gitup`: add-then-update takes two runs. Not
+included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag actions.
 
 ### Behaviour
 
-1. `-h`, `-v` and usage errors exit before any other output. Every other run first prints `gitup: the git-repo-updater` and
-   a blank line.
-2. Bookmark actions run in this order: add, delete, list, clean. Each one sees the result of the one before.
-3. `-e ""` is the same as no `-e`. Any other `-e` value is split into words as Python `shlex.split` does in POSIX mode with
-   comments off. A value with no words, or one that cannot be split, is a usage error with exit `2`. The split rules:
-   1. Only space, tab, CR and LF separate words. So a value of only these four characters has no words, but `"\f"` is a word.
-   2. `#` is a literal character.
-   3. Outside quotes, `\` escapes the next character. A trailing `\` is an error.
-   4. Inside `'`, every character is literal. Inside `"`, `\` escapes only `"` and `\`. Any other `\` stays, so `"%h\t%s"`
-      keeps `\t`. An unclosed quote is an error.
-   5. Adjacent quoted and unquoted parts join into one word. So `a"b c"d` is `ab cd`, and `''` is one empty word.
+1. A usage error exits with code 2 before any other output. Help and version print and exit with code 0.
+   Every other run prints the banner first: `9up`, then a blank line.
+2. Path resolution, for command-line paths and bookmarks alike, in this order:
+   - `~` at the start expands to the home directory. Only a leading `~` alone or `~/` expands. `~user` does
+     not expand, and `$VAR` never expands.
+   - An empty path prints a "doesn't exist" error.
+   - A path that is a repository is its own only repository, whatever the depth.
+   - A missing path whose first non-space character is `#` is a comment. Strip the leading spaces, then every
+     leading `#`, then trim. The rest is the comment text. An empty rest prints nothing.
+   - Any other missing path expands as a glob. No match, or a bad pattern, prints a "doesn't exist" error. A
+     path with no glob characters matches when its own link exists, so a broken symbolic link prints a header
+     with a count of 0.
+   - An existing path that is not a directory prints an "isn't a repository" error. So does a directory when
+     the depth is 0.
+   - Any other directory is searched. The search follows symbolic links to directories and enters hidden
+     directories. It skips a directory it cannot read.
+   - Depth: the path itself is depth 0. A repository directly below the path is depth 1. Depth `d` finds
+     repositories down to `d` levels below the path. The search does not descend into a repository it found.
+   - A directory with no repositories below it, including an empty directory, prints its header with a count
+     of 0.
+   - A path error names the path as given, after `~` expansion. It does not use the absolute form the header
+     uses.
+3. When an update or an `exec` run reaches the bookmarks and the bookmark file has none, an update prints a
+   hint line that says so. An `exec` run prints nothing.
+4. A repository updates like this:
+   - Pick the remotes: all of them, or with `--current-only` only the remote that the current branch tracks.
+     That remote comes from the branch's configuration, so it works on an unborn branch.
+   - A repository error ends the repository: it prints an error line, with no fetch and no branch step. The
+     checks run in this order: with `--current-only`, a detached HEAD; then with `--current-only`, no tracked
+     remote; then no remotes at all.
+   - Fetch each picked remote in configuration order, and report what the fetch brought in: new branches,
+     new tags, updated references, or up to date. A remote with no reference lines in its configuration
+     prints a skip line for that remote.
+   - The first failed fetch stops the fetches for that repository. The branch step still runs.
+   - A fetch failure shows the `error:` and `fatal:` lines from git's standard error, with leading and
+     trailing whitespace removed. When git prints no such line, the report shows the command and its exit
+     status instead.
+5. Branch step. It runs per repository after the fetches, unless `--fetch-only` is set, and covers every
+   local branch in name order. `--current-only` does not change it.
+   - A branch with no upstream is skipped. So is a branch whose upstream reference is missing locally, and a
+     branch whose upstream has no merge base with it.
+   - A branch whose upstream is an ancestor of it is up to date. A branch that can fast-forward: the current
+     branch updates with `git merge --ff-only`. If the merge fails and its standard error holds both
+     `local changes` and `would be overwritten`, the branch is skipped with the uncommitted-changes reason.
+     If it fails for another reason, the branch is skipped with a plain failure reason. Any other branch
+     updates with `git branch -f`, and a failure shows an error.
+   - A branch that cannot fast-forward is skipped, with the reason that a fast-forward is not possible.
+6. `exec` runs its command without a shell, in the repository's working directory. A bare repository has no
+   working directory, so it uses the repository directory itself. The command's standard output prints
+   first, then its standard error, each split into lines the way `str::lines` splits. The command's exit
+   status is ignored. A command that cannot start prints an error line. An `exec` with no command after
+   `--` is a usage error (exit 2), and it runs before anything else, so it never touches the bookmark file.
+7. Every `git` child process runs through `run()` (see Git Backend), which pins the locale to English.
+   The skip reasons in item 5 match English git output, so the pin is part of the design, not an accident.
+8. Exit codes: 0 for a normal run, 2 for a usage error, and 1 when a bookmark write fails. A failed write
+   also prints an error to standard error.
 
-   The split command replaces the update. It runs in each given path. With `-u`, or with no path, it also runs in each
-   bookmark. No bookmarks prints nothing.
-4. Without `-e`, update each given path. Then update the bookmarks if `-u` is set or no other action ran.
-5. An update of the bookmarks with no bookmarks prints the no bookmarks hint.
-6. Each path, whether a bookmark or an argument, has `~` expanded. Only a leading `~` alone or `~/` expands, to `HOME`. `~user` and
-   `$VAR` stay as typed. An empty path, as in `gitup ""`, prints `doesn't exist!` before any other check. Without this rule
-   `Path::new("").join(".git")` is `.git` in the current directory. Every other path resolves in this order:
-   1. A repo: use it.
-   2. A missing path whose first non-space character is `#`: a comment. Strip leading space, then every leading `#`, then trim.
-      Print the rest in cyan. Print nothing if it is empty.
-   3. Another missing path: expand it as a glob. No match, or a bad pattern, prints `doesn't exist!`. A path with no glob
-      magic matches when its own link exists, as Python `lexists` did. So a broken symlink prints a header with `0 repos`.
-   4. An existing path that is not a directory prints `isn't a repository!`. So does a directory when depth is `0`.
-   5. A directory: collect the repos below it.
-7. The search stops at the first repo on each branch of the tree. It follows symlinked directories and enters hidden ones.
-   It skips a directory that it cannot read. Python crashed there with `PermissionError`.
-   Depth `n` finds repos up to `n` levels below the path. A glob match counts as level 0, so `-t 0` still checks each match.
-8. Each resolved path prints `<base> (N repos):`, or `(1 repo):`. `N` can be `0`. `<base>` is the absolute form of the path,
-   with `.`, `..` and trailing slashes removed lexically, as Python `os.path.abspath` does. A glob base keeps its wildcards.
-9. Repos follow in name order. A name is the repo path relative to `<base>`. A path that is itself a repo is named by its last
-   component. A glob match is named relative to the deepest common parent directory of `<base>` and the repo.
-10. Each repo prints its name, then these steps:
-    1. Pick the remotes: all of them, or with `-c` the remote of the current branch upstream.
-    2. A repo error ends the repo. It prints the error line, with no fetch and no branch step. The checks run in this order:
-       with `-c`, a detached HEAD, then with `-c`, no tracked remote, then no remotes.
-    3. Fetch each remote in config order. A remote with no `fetch` refspec prints the fetch skip line. On the first failed
-       fetch, print the error and stop fetching. The branch step still runs.
-    4. Report new branches, new tags and branch updates by name. Report `up to date` when there are none.
-    5. Unless `-f`, visit every local branch in name order. This includes `-c` runs.
-    6. Skip a branch with no upstream, a missing upstream or no merge base. Report `up to date` when the upstream is an ancestor.
-    7. Fast-forward the current branch with `git merge --ff-only`. Skip it on local changes or when that fails.
-    8. Move any other branch with `git branch -f`, but only when the branch is an ancestor of its upstream.
-11. The fetch error text is built from stderr in this order, as GitPython and Python `gitup` did:
-    1. Keep only lines that start with `error:` or `fatal:`. Join them with a newline.
-    2. Collapse each whitespace run to one space. Trim.
-    3. Drop one leading `fatal:` and the spaces after it.
-    4. Strip every leading and trailing `'`. So `fatal: '/x' does not appear` becomes `/x' does not appear`.
-    5. If the text is empty, use the fallback from Message Strings. Otherwise add `.` unless it ends with `.`.
-12. `-e` runs without a shell, in the repo workdir. Remove one final `\n` from each stream, as GitPython did. Then split
-    each stream like Python `str.splitlines`, which also breaks on `\r`, `\v`, `\f`, `\x1c` to `\x1e`, `\x85`, `\u{2028}`
-    and `\u{2029}`. A `\r\n` pair is one line break. Rust `str::lines` does not do this, so a small splitter does it.
-    Print stdout lines, then stderr lines. An empty line prints as 8 spaces. Ignore the exit status.
-13. Every child process, git and `-e` alike, gets `LC_ALL=C`, `LANGUAGE=C` and a null stdin, as GitPython did.
-14. Exit status is `0` after the banner and `2` on a usage error. A failed bookmark write prints `Error: <io message>` to stderr
-    and exits `1`.
+### Output
 
-### Message Strings
+Output groups by path. Each path prints a header, then one block per repository in name order. The header
+shows the path in its absolute form, normalised lexically (`.` and `..` parts resolved, no trailing slash),
+with the repository count. A glob path keeps its wildcards in the header. A repository's name is its path
+relative to the header path. A path that is itself a repository is named by its last component. A glob match
+is named relative to the deepest common parent directory of the header path and the repository.
+The wording is 9up's own. Keep it close to `gitup`'s where `gitup`'s words are already clear, and prefer one
+short line per fact.
 
-Tests assert these texts byte for byte, with colour off. Python `print` adds a space between arguments. So repo names and
-bookmark entries have a 4 space indent. Fetch, branch and repo error lines, and `-e` output, have an 8 space indent. Banner,
-headers, comments and path errors have none.
-
-| Case             | Exact text                                                                                                                                                |
-|------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Banner           | `gitup: the git-repo-updater`, then an empty line                                                                                                         |
-| Header           | `<base> (N repos):`, `<base> (1 repo):`                                                                                                                   |
-| Repo line        | `<name>:`                                                                                                                                                 |
-| Fetch result     | `Fetching <remote>: <kinds>.` Kinds are joined by a comma and a space. A kind is `new branch (a)` or `new branches (a, b)`                                |
-| Fetch kinds      | `new branch`, `new branches`, `new tag`, `new tags`, `branch update`, `branch updates`, in that order                                                     |
-| Fetch none       | `Fetching <remote>: up to date.`                                                                                                                          |
-| Fetch skip       | `Fetching <remote>: skipped: no configured refspec.`                                                                                                      |
-| Fetch error      | `Fetching <remote>: error: <text>` with a lowercase `error:`                                                                                              |
-| Fetch fallback   | `<command> failed with status <N>.`                                                                                                                       |
-| Branch result    | `Updating <branch>: up to date.`, `Updating <branch>: done.`                                                                                              |
-| Branch skip      | `Updating <branch>: skipped: <reason>.`                                                                                                                   |
-| Skip reasons     | `no upstream is tracked`, `upstream does not exist`, `can't find merge base with upstream`, `uncommitted changes`, `not possible to fast-forward`         |
-| Branch error     | `Updating <branch>: error: <text>` with a lowercase `error:`. `<text>` is the `git branch -f` stderr, cleaned as in Behaviour 11                          |
-| Uncommitted rule | The merge stderr holds both `local changes` and `would be overwritten`                                                                                    |
-| Repo errors      | `Error: no remotes configured to fetch.`, `Error: no remote tracked by current branch.`, `Error: --current-only doesn't make sense with a detached HEAD.` |
-| Path errors      | `Error: <path> doesn't exist!`, `Error: <path> isn't a repository!`. `<path>` is the `~` expanded input, not the absolute form                            |
-| Exec start error | `Error: <argv0>: <io error>`                                                                                                                              |
-| No bookmarks     | `You don't have any bookmarks configured! Get help with 'gitup -h'.`                                                                                      |
-| Bookmark titles  | `Added bookmarks:`, `Already bookmarked:`, `Deleted bookmarks:`, `Not bookmarked:`, `Current bookmarks:`                                                  |
-| Bookmark notes   | `You have no bookmarks to display.`, `You have no bookmarks to clean up.`, `All of your bookmarks are valid.`                                             |
-
-Colour follows Python. colorama 0.4.6 strips ANSI codes when stdout is not a terminal, so the port does the same.
-
-| Style  | Used for                                                                                          |
-|--------|---------------------------------------------------------------------------------------------------|
-| Bold   | `gitup` in the banner, header base, repo name, remote name, branch name, the path in a path error |
-| Red    | `Error:`, fetch `error:`, `Already bookmarked:`, `Not bookmarked:`                                |
-| Yellow | `skipped:`, `Added bookmarks:`, `Deleted bookmarks:`, `Current bookmarks:`                        |
-| Green  | `done`, each fetch kind                                                                           |
-| Blue   | `up to date`                                                                                      |
-| Cyan   | Comment text                                                                                      |
-
-Every colour is bold too, because Python adds `Style.BRIGHT` to each one.
+Terminal output uses colour. A colour is a fixed escape code per role: bold white for a path header, bold
+green for a repository name, red for an error or a skip, cyan for new or updated references and branches, no
+colour for up-to-date lines. Standard output that is not a terminal gets no colour codes. Standard error never
+gets colour codes.
 
 ### Bookmark File
 
-| Item      | Rule                                                                                                                                                                                                |
-|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Path      | `$XDG_CONFIG_HOME/gitup/bookmarks`, else `~/.config/gitup/bookmarks`. An empty variable counts as unset. The variable is `~` expanded                                                               |
-| Override  | `-b path`, with `~` expanded. `-b ""` uses the default path, as Python did                                                                                                                          |
-| Read      | Split on `\n`. Trim each line. Drop empty lines. A missing or unreadable file means no bookmarks                                                                                                    |
-| Write     | Create the parent directory. Join with `\n`. No final newline                                                                                                                                       |
-| Encoding  | UTF-8                                                                                                                                                                                               |
-| Add       | Normalise each path. Report new ones as added and known ones as already bookmarked. Always write. In `-a x x` the second is known                                                                   |
-| Delete    | Normalise each path. Each argument removes only the first match. Report deleted and not bookmarked                                                                                                  |
-| Empty     | `-d` with an empty file reports all as not bookmarked and does not write                                                                                                                            |
-| List      | Print entries as stored, or the no bookmarks to display note                                                                                                                                        |
-| Clean     | Drop an entry that is not a directory and whose `~` expanded glob has no match. This drops comment lines too. Write only on change                                                                  |
-| Normalise | A path that starts with `~`, `~user` included, keeps it and is only normalised lexically. An empty path becomes the absolute current directory, as Python `abspath("")` did. Others become absolute |
-| Comments  | A line that starts with `#` prints as a comment when an update or `-e` run reaches it                                                                                                               |
+The bookmark file format is `gitup`'s, so an existing file carries over unchanged. One bookmark per line. The
+default path is `$XDG_CONFIG_HOME/gitup/bookmarks`, or `~/.config/gitup/bookmarks` when the variable is unset
+or empty. The variable is `~` expanded. `-b ""` also uses the default path.
 
-### Deliberate Deviations
+- Read: split on `\n`, trim each line, drop empty lines. A missing or unreadable file means no bookmarks.
+- Write: create the parent directory, join the entries with `\n`, with no final newline. Every write
+  replaces the whole file, in the original order, with comments in place.
+- A bookmark is stored as its absolute path, normalised without a filesystem access: duplicate separators
+  collapse, `.` parts drop, `..` parts resolve against the parts before them, and a trailing separator drops.
+  A path that starts with `~` keeps it and is only normalised lexically. An empty path becomes the current
+  directory.
+- A relative `add` value resolves against the current directory first. An added path does not need to exist.
+- Add reports each path as added or already bookmarked, and always writes. In `add x x`, the second `x` is
+  already bookmarked.
+- Delete matches a stored bookmark exactly, after the same normalisation. Each argument removes only the
+  first match. Delete reports each path as deleted or not bookmarked. With an empty file, delete reports
+  every path as not bookmarked and does not write.
+- List prints the entries as stored, or a note when the file has none.
+- `clean` removes an entry when it is not a directory and its glob has no match. This drops comment lines
+  too, because a comment is not a directory. `clean` prints a note when there is nothing to clean, and a
+  note when every entry is valid.
+- Invalid UTF-8 in the file is replaced with the Unicode replacement character, and the next write stores
+  the replaced text.
 
-Each row drops work with no value now or fixes a Python crash. Ask for any row back and it becomes a step.
+### Differences From gitup
 
-| Deviation                                                                                         | Reason                                                                                                                                                            |
-|---------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| No `--selftest`                                                                                   | It ran the Python suite. The port uses `cargo test`                                                                                                               |
-| No migration from `~/.gitup` or `config.ini`                                                      | Only pre 2018 installs need it. A Python 0.5.2 install has already migrated                                                                                       |
-| No live fetch counters                                                                            | Python printed them even in a pipe. They break once repos run in parallel                                                                                         |
-| Each repo block prints when the repo is done                                                      | Steps return data first. Python printed `Fetching x` before the fetch ran. The final text is the same                                                             |
-| No `Stopped by user.` on Ctrl-C                                                                   | It needs a signal crate. The default exit on SIGINT is enough                                                                                                     |
-| Help and usage error wording come from clap                                                       | The flags, groups and help texts stay. The layout is clap's                                                                                                       |
-| `-v` prints `gitup <version>`                                                                     | Python also printed the Python version                                                                                                                            |
-| `-b` needs a value                                                                                | A bare `-b` did nothing in Python                                                                                                                                 |
-| The upstream comes from git `%(upstream)`                                                         | Python rebuilt it from config and ignored the refspec. Git's answer is the correct one                                                                            |
-| `-c` with an upstream remote that is not configured prints `no remote tracked by current branch.` | Python crashed with `IndexError`                                                                                                                                  |
-| `**` in a glob is recursive                                                                       | The `glob` crate rule. Python treated `**` like `*`                                                                                                               |
-| A failed `git branch -f` prints `Updating <branch>: error: <text>`                                | Python crashed, for example on a branch checked out in another worktree                                                                                           |
-| New refs are classified by their local ref name                                                   | See the porcelain table. Python parsed `[new branch]` text from stderr                                                                                            |
-| A ref outside `refs/remotes/<remote>/` keeps its name, so a mirror prints `new branch (feat)`     | Python rebuilt the ref as `refs/remotes/feat` and printed `new branch ()`. Checked on a `--mirror` clone                                                          |
-| Fetch does not recurse into submodules                                                            | `--porcelain` turns off config driven submodule recursion. Run `git submodule update` yourself                                                                    |
-| The fetch fallback names the Rust command                                                         | It shows the fetch argv from Git Commands Per Repo, not the GitPython argv                                                                                        |
-| `-e` whitespace only or unsplittable is a usage error. `-e ""` stays no `-e`                      | Python crashed at the first repo. Treating it as no `-e` would start a full update by mistake. The port exits before the bookmark actions, which Python ran first |
-| `-e` start failure prints `Error: <argv0>: <io error>`                                            | Python printed the long GitPython text `Cmd('x') not found due to: ...`                                                                                           |
-| Invalid UTF-8 in the bookmark file is replaced                                                    | Python crashed with `UnicodeDecodeError`                                                                                                                          |
-| The `-b` help names the default rule, not the resolved path                                       | Clap help text is static. It says `$XDG_CONFIG_HOME/gitup/bookmarks`, else `~/.config/gitup/bookmarks`                                                            |
-| The help epilog links to this repository                                                          | Bugs in the port belong here, not upstream                                                                                                                        |
-| `[path]...` lists last in the `updating repositories` group                                       | Clap puts positionals after options in a heading. Python listed it first                                                                                          |
-| An unreadable directory in the walk is skipped                                                    | Python crashed with `PermissionError` from `os.listdir`                                                                                                           |
-| No `$VAR` expansion in paths                                                                      | GitPython expanded `$VAR` when it opened a path, with a deprecation warning. Globs and errors did not                                                             |
-| `~user` is not expanded, only `~` and `~/`                                                        | Python `expanduser` also read other users' homes. Behaviour 6 has the rule                                                                                        |
-| An empty path argument prints `Error:  doesn't exist!`                                            | GitPython opened the current directory for `""`. If that was not a repo, Python printed `isn't a repository!`                                                     |
-| A relative `core.worktree` resolves against the git dir                                           | Git's rule. GitPython ran git in the raw value, so it resolved against the current directory                                                                      |
-| A failed bookmark write prints `Error: <io message>` to stderr and exits `1`                      | Python printed a traceback                                                                                                                                        |
+Feature parity allows these differences. The Feature Spec above is the whole contract: where it is silent,
+the implementer chooses, and `gitup` is a guide, not a rule.
+
+Where Python crashed or printed a traceback, 9up prints an error line instead: an unconfigured
+`--current-only` remote, a failed `git branch -f`, a command that cannot start, an unreadable directory
+during the search, and a failed bookmark write (which also exits 1).
+
+| Difference | Reason |
+| --- | --- |
+| The interface is subcommands, not flags. One verb per run. | The idiomatic clap shape. |
+| No migration from `~/.gitup` or the old XDG `config.ini`. | One default path, no legacy state. |
+| Long options must be written in full. Argparse accepted any unique prefix. | Clap has no prefix matching. |
+| An exec command is separate arguments after `--`, split by the shell. Python took one string and split it. | No re-splitting what the shell already split. |
+| The current branch's upstream comes from git's own `%(upstream)` value. | One source instead of a reconstruction. |
+| A `**` pattern in a bookmark path is recursive. | The `glob` crate's semantics. |
+| New references after a fetch are classified by the local reference name. | Clearer than the remote-side name. |
+| A fetch does not recurse into submodules. | One less flag until a user needs it. |
+| `$VAR` never expands, in any path. | The expansion was a side effect, not a feature. |
+| Output prints per repository when the repository is done. No live fetch counters. | Milestone 2 concurrency needs this shape anyway. |
+| Ctrl-C stops the process. There is no "Stopped by user." message. | The default signal behaviour is enough. |
 
 ## Design Decisions
 
 ### Git Backend
 
-The port runs the `git` binary through `std::process::Command`. It does not link `libgit2` or `gix`.
+9up runs the `git` binary as a child process. It does not use `libgit2` (the `git2` crate) and does not parse
+pack files. The binary honours the user's own git setup (aliases, credentials, signing, hooks, `includeIf`
+rules) because real `git` runs, its behaviour matches the git the user runs by hand, and its failure text is
+git's own words, which the user can search for.
 
-| Reason                                                                           |
-|----------------------------------------------------------------------------------|
-| Auth works as in your shell: ssh agent, credential helpers, `includeIf`, proxies |
-| No C build dependency and no gap in fetch features                               |
-| GitPython also shells out for fetch, merge and branch, so behaviour matches      |
-| Each call is its own process, so parallel repos in milestone 2 need no locks     |
+`git` must be on the `PATH` at version 2.41 or later. Porcelain output (machine-readable output that does not
+change between releases) only, and never the human progress output. Every call goes through one function:
 
-One function, `run(dir, argv)`, starts every child process. It sets `LC_ALL=C`, `LANGUAGE=C` and a null stdin, and captures
-both streams. The locale rule is required, because skip reasons match English git text such as `would be overwritten`.
+```rust
+fn run(dir: &Path, argv: &[&str]) -> io::Result<Output>
+```
 
-The port needs git 2.41 or later for `git fetch --porcelain`. A spike on git 2.56 confirmed the format
-`<flag> <old> <new> <ref>`. A fetch with no change prints nothing. A failed fetch exits `128`.
+It runs with its working directory set to `dir`, `LC_ALL=C` and `LANGUAGE=C` in the environment, and a null
+standard input. No shell, anywhere.
 
-| Porcelain line                                       | Reported as                |
-|------------------------------------------------------|----------------------------|
-| Flag `*`, ref under `refs/heads/` or `refs/remotes/` | `new branch`               |
-| Flag `*`, ref under `refs/tags/`                     | `new tag`                  |
-| Flag ` `, a space                                    | `branch update`            |
-| Flags `+`, `-`, `t`, `!`, `=`, any other `*`         | Not reported, as in Python |
+### Git Commands Per Repository
 
-A reported ref is named as GitPython names it. Strip `refs/remotes/<any segment>/`, else drop the first two path parts, which
-strips `refs/tags/` or `refs/heads/`. A ref with fewer than three parts keeps its full name. So `refs/remotes/origin/feat/x`
-is `feat/x`, and a mirror's `refs/heads/feat` is `feat`.
+| Need | Command |
+| --- | --- |
+| Detect a repository (in `discover.rs`, no git call) | A filesystem test only. A git directory has a `HEAD` file and `objects` and `refs` directories. A linked worktree's admin directory has no `objects`: it holds a `commondir` file instead, and that also counts. A path is a repository when it is a git directory, when its `.git` entry is one, or when its `.git` file's `gitdir:` target is one. A relative `gitdir:` target resolves against the `.git` file's directory. |
+| Working directory and git directory | `git rev-parse --absolute-git-dir` and `git rev-parse --show-toplevel`, run in the repository by `update.rs`. A bare repository has no top level, so its working directory is the git directory. Let git answer these questions. Do not resolve `commondir` files or `core.worktree` by hand. |
+| Fetch | `git fetch --porcelain --quiet <remote>`, one call per remote, with `--prune` added when `--prune` is set. The porcelain lines classify by the local reference name: a line with the `*` flag is a new reference, and a line that shows an old and a new value is an update. Lines with the flags `+`, `-`, `t`, `!` or `=` are not reported. A reported name comes from the local reference: strip `refs/remotes/<remote>/` from the front, else drop the first two path parts (which strips `refs/tags/` or `refs/heads/`). A reference with fewer than three parts keeps its full name. |
+| Remotes, URLs and reference lines | One call per repository: `git config --get-regexp ^remote\.`, parsed in memory. It gives each remote's name, URL and `fetch` lines, in configuration order. A remote with no `fetch` lines prints the fetch skip line. |
+| Current branch | `git symbolic-ref -q HEAD`, then strip the `refs/heads/` prefix. A failure means a detached HEAD. Never use `--short`, which prints `heads/main` when a tag `main` exists. |
+| The current-only remote | `git config --get branch.<branch>.remote` and `git config --get branch.<branch>.merge`. Both must be set. Configuration works on an unborn branch, where `for-each-ref` lists nothing. |
+| Branch snapshot | One call after the fetch: `git for-each-ref --format=%(refname)%00%(objectname)%00%(upstream) refs/heads refs/remotes`. The branch step reads upstreams and SHAs from this snapshot. After each successful `merge` or `branch -f`, set that branch's snapshot SHA to its upstream SHA, so a branch that tracks a local branch sees the move made earlier in the loop. |
+| Update the current branch | `git merge --ff-only <upstream full ref>`. |
+| Update any other branch | `git branch -f <branch> <upstream full ref>`. |
+| Ancestor test | `git merge-base <branch SHA> <upstream SHA>`, from the snapshot. Exit 1 means no merge base. A base equal to the upstream SHA means up to date. A base equal to the branch SHA means a fast-forward is possible. |
 
-### Git Commands Per Repo
-
-| Step           | Command                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-|----------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Detect a repo  | No git call. A std check in `discover.rs`, as GitPython did. A git dir has a `HEAD` file and `objects` and `refs` directories. A path is a repo when it is a git dir, when `path/.git` is one, or when `path/.git` is a file whose `gitdir:` target is one. A relative target resolves against the `.git` file's directory. A linked worktree target holds a `commondir` file, which also counts                                                                                                                                                                                                                                                                                                                                                               |
-| Workdir        | `Repo` keeps the git dir and a separate workdir. For `path/.git` and a `.git` file, the workdir is `path`. A git dir that holds `gitdir` and `commondir` files is a linked worktree admin dir, as in GitPython. Its workdir is the parent of the path in `gitdir`, resolved against the git dir when relative. It is never bare. For any other path that is itself a git dir, `git config --local --get --bool core.bare` and `git config --local --get core.worktree` run in the git dir. `--local` reads only the repo config, as GitPython did, so global config never sets `core.worktree`. A bare repo uses the git dir. Else `core.worktree`, resolved against the git dir, or the parent of the git dir. Every git and `-e` command runs in the workdir |
-| Current branch | `git symbolic-ref -q HEAD`, then strip `refs/heads/`. Exit `1` means a detached HEAD. Do not use `--short`, which prints `heads/main` when a tag `main` exists                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Remotes        | `git config --local --includes --name-only --get-regexp '^remote\..+\.[^.]+$'`. Exit `1` means no remotes. The name sits between the first and last dot. Keep config order and drop repeats. A remote without a `.fetch` key prints the fetch skip line                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `-c` remote    | `git config --get branch.<b>.remote` and `git config --get branch.<b>.merge`, before the fetch. Both must be set, as GitPython `tracking_branch` required. Config works on an unborn branch, where `for-each-ref` lists nothing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Refs           | `git for-each-ref --format='%(refname)%00%(objectname)%00%(upstream)' refs/heads refs/remotes`, run once after the fetch. It serves only the branch step. A missing upstream is a failed lookup in its rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Fetch          | `git fetch --porcelain <remote>`, or `git fetch --porcelain --prune <remote>` when `-p` is set                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Merge base     | `git merge-base <branch sha> <upstream sha>`. Exit `1` means no merge base. Base equal to upstream means up to date. Base equal to branch means a fast-forward is possible                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| Update current | `git merge --ff-only <upstream full ref>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Update another | `git branch -f <branch> <upstream full ref>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-
-The quotes in this table are for display. `run` passes each argv element as is, with no shell and no shell quotes.
-
-Pass SHAs or full ref names to git, never short names. A tag with the same short name would win otherwise.
-
-After each successful `merge` or `branch -f`, set that branch's SHA in the snapshot to its upstream SHA. Python read each
-ref fresh, so a branch that tracks a local branch must see the move made earlier in the loop.
+Pass SHAs or full reference names to git, never short names. A tag with the same short name would win
+otherwise.
 
 ### Dependencies
 
-Ponytail rule: std first. Each crate must earn its place.
+Two crates, plus one for tests. The standard library covers the rest.
 
-| Crate           | Use                      | Why not std                                                                        |
-|-----------------|--------------------------|------------------------------------------------------------------------------------|
-| `clap` derive   | Parsing, help, version   | Groups, aliases, prefix matching and `nargs` parity                                |
-| `glob`          | Path and bookmark globs  | Python used `glob`. Set `require_literal_leading_dot`, as Python skips dot entries |
-| `tempfile`, dev | Temporary repos in tests | Safe cleanup of temporary directories                                              |
+| Crate | Use |
+| --- | --- |
+| `clap` (derive feature) | Parse the command line: a `Parser` struct with a `Subcommand` enum. |
+| `glob` | Expand the glob patterns that a bookmark path can contain, with `require_literal_leading_dot` set, as Python skipped dot entries. |
+| `tempfile` (development only) | Temporary directories in integration tests. |
 
-`glob` 0.3.4 checks a literal pattern part with `fs::symlink_metadata`, so a broken symlink matches as Python `lexists` did.
-This was checked in a scratch crate. No extra `lexists` check is needed in `discover::resolve` or `bookmarks::clean`.
+What the standard library covers here: the colour constants (a few string constants, written by hand), the
+error type (`io::Error` and `io::Result`), the depth-first directory walk (`read_dir`, sorted per directory),
+the lexical path normalisation (a short function over path parts), and the child process (`std::process::Command`).
 
-| Need            | Std answer                                                                                                                         |
-|-----------------|------------------------------------------------------------------------------------------------------------------------------------|
-| Split `-e`      | About 40 lines in `main.rs`: POSIX `shlex.split` with comments off, with the rules in Behaviour 3                                  |
-| Colour          | Six ANSI `const` strings and a reset, used only when `std::io::IsTerminal` is true                                                 |
-| Errors          | `std::io::Result` and `?` for the bookmark file, stdout and `run`. Every git failure is report text. No `Box<dyn Error>`           |
-| Home and config | `std::env::var_os` for `HOME` and `XDG_CONFIG_HOME`, read only in `main.rs`. See Data Flow                                         |
-| Path normalise  | A lexical `..` collapse. A path that starts with `~` gets only this. Others first get `std::path::absolute`, with `""` read as `.` |
-| Depth walk      | `std::fs::read_dir` recursion                                                                                                      |
-| Child processes | `std::process::Command` with `current_dir`, `env` and `Stdio::null()`                                                              |
+Not added: a colour crate, an error-type crate, a directory-walk crate, a test-framework crate, a splitting
+crate for the exec command (the shell already split it), `dirs` or `home` (the home directory comes from the
+`HOME` environment variable).
 
-Not added: `tokio`, because git is the slow part and runs as a process. Also not `rayon`, `anyhow`, `thiserror`, `serde`,
-`walkdir`, `dirs`, `anstream` or `assert_cmd`. Not the `shlex` crate either. Version 2.0.1 treats `#` as a comment with no
-option to turn it off: a scratch test gave `["echo"]` for `echo # x`, where Python gives `["echo", "#", "x"]`.
+## Step 1: Foundation, Bookmarks And Discovery
 
-### Concurrency Readiness
-
-Milestone 1 is sequential. These rules keep milestone 2 a small change:
-
-1. `update_repo(&Repo, &Cli) -> Report` returns data and never prints. So does `exec_repo`.
-2. Only `main.rs` writes to stdout. It prints each `Report` in sorted repo order.
-3. No global mutable state. `Cli` and `Repo` are plain data, so both are `Sync`.
-4. Every child process goes through `run(dir, argv)`. A timeout or a job limit attaches there later.
-5. Dispatch collects a `Vec<Repo>` per path and then maps it to reports. Milestone 2 swaps the map for
-   `std::thread::scope` with a worker limit.
-
-## CLI Design
-
-One command and no subcommands, so every Python invocation keeps working. One clap derive struct, `Cli`, has one field per
-flag. `help_heading` reproduces the four Python groups with their lowercase titles. Each help text is the Python text.
-
-### Help Screen
-
-This is clap 4.6.7 output from a scratch crate with the real texts. Do not add the `wrap_help` feature. Without it clap does
-not wrap, and it aligns each heading on its own. The `-t` and `-b` lines are wrapped here only to fit the line limit.
-
-```text
-Easily update multiple git repositories at once.
-
-Usage: gitup [OPTIONS] [path]...
-
-updating repositories:
-  -u, --update        update all bookmarks (default behavior when called without arguments)
-  -t, --depth <n>     max recursion depth when searching for repos in subdirectories (default: 3; use 0 for no recursion,
-                      or -1 for unlimited)
-  -c, --current-only  only fetch the remote tracked by the current branch instead of all remotes
-  -f, --fetch-only    only fetch remotes, don't try to fast-forward any branches
-  -p, --prune         after fetching, delete remote-tracking branches that no longer exist on their remote
-  [path]...           update this repository, or all repositories it contains (if not a repo directly)
-
-bookmarking:
-  -a, --add <path>...         add directory(s) as bookmarks
-  -d, --delete <path>...      delete bookmark(s) (leaves actual directories alone)
-  -l, --list                  list current bookmarks
-  -n, --clean                 delete any bookmarks that don't exist [alias: --cleanup]
-  -b, --bookmark-file <path>  use a specific bookmark config file (default: $XDG_CONFIG_HOME/gitup/bookmarks,
-                              else ~/.config/gitup/bookmarks)
-
-advanced:
-  -e, --exec <command>  run a shell command on all repos [alias: --batch]
-
-miscellaneous:
-  -h, --help     show this help message and exit
-  -v, --version  show program's version number and exit
-
-Both relative and absolute paths are accepted by all arguments.
-Direct bug reports and feature requests to https://github.com/siutsin/9up.
-```
-
-### Sample Output
-
-The bookmarks are `# work`, `~/projects` and `~/gone`. Colour is stripped here, as in a pipe.
-
-```text
-gitup: the git-repo-updater
-
-work
-/home/me/projects (3 repos):
-    9up:
-        Fetching origin: new branch (feat), branch update (main).
-        Updating feat: skipped: no upstream is tracked.
-        Updating main: done.
-    notes:
-        Error: no remotes configured to fetch.
-    tools/cli:
-        Fetching origin: up to date.
-        Fetching fork: error: Could not read from remote repository.
-        Updating main: skipped: uncommitted changes.
-Error: /home/me/gone doesn't exist!
-```
-
-### Clap Notes
-
-1. `#[command(name = "gitup", version, about, after_help = EPILOG, disable_version_flag = true, disable_help_flag = true,
-   infer_long_args = true)]`. Without `name`, clap prints `nine-up` from `CARGO_PKG_NAME`. `infer_long_args` gives the
-   argparse prefix match. `about` reads `description = "Easily update multiple git repositories at once."` from
-   `Cargo.toml`. `EPILOG` is a `const` with the two epilog lines, joined by `\n`.
-2. `-h` is `_help: Option<bool>` with `ArgAction::Help` and `help_heading = "miscellaneous"`. The built in flag would sit
-   under a default heading instead.
-3. `-v` is `_version: Option<bool>` with `ArgAction::Version`. It prints `gitup <version>`. Clap panics on this action
-   without `version` on the command.
-4. `Option<bool>` keeps both out of `struct_excessive_bools`. The `_` prefix keeps `dead_code` quiet, as clap reads them.
-5. `-a` and `-d` are `Vec<String>` with `num_args = 1..`, as `nargs="+"` was. `bookmark_file` is `Option<String>` and
-   `paths` is `Vec<String>`. The clap `PathBuf` parser rejects an empty value, and `-b ""` and `gitup ""` must parse.
-6. `-t` is `i32` with `default_value_t = 3` and `allow_negative_numbers = true`, so `-t -1` parses. It also sets
-   `hide_default_value = true`, because the help text already says `default: 3`.
-7. `-e` is `Option<String>` with one value. `--batch` is a visible alias, and so is `--cleanup` for `-n`.
-8. Before the banner, a rejected `-e` value from Behaviour 3 runs
-   `let mut cmd = Cli::command(); cmd.error(ErrorKind::ValueValidation, "...").exit()`, with `clap::CommandFactory` in
-   scope. It prints a usage error and exits `2`.
-9. `help_heading` on the `path` positional puts `[path]...` in `updating repositories`. A scratch crate confirmed it.
-
-## Step 1: Foundation and Build Infra
-
-Goal: an empty but fully gated crate. The four checks in the `README.md` Development section pass locally and in CI,
-before any feature code exists. Repo conventions come from the repos listed under Files. None of them is Rust, so the Rust parts
-follow the Cargo book and the clippy book.
-
-Run `rustup toolchain install` in the repo. It installs the toolchain named in `rust-toolchain.toml`.
+One pull request builds the crate, the bookmark commands and repository discovery. No repository updates
+yet: paths and bookmarks print their headers, the repository names under them, comments and path errors.
 
 ### Verified Versions
 
-Checked on 25 Oct 2026. Renovate keeps every pin current after Step 1.
+Checked on 25 Oct 2026. The README of each crate is the source.
 
-| Item        | Pin      | Note                                                              |
-|-------------|----------|-------------------------------------------------------------------|
-| Rust stable | `1.99.1` | Released 2026-10-13                                               |
-| Edition     | `2024`   | The latest edition                                                |
-| `clap`      | `4.6.7`  | Feature `derive` only                                             |
-| `glob`      | `0.3.4`  |                                                                   |
-| `tempfile`  | `3.27.0` | Dev dependency                                                    |
-| git         | `2.41`   | Minimum for `fetch --porcelain`. Both CI runners ship a newer one |
+| Item | Version | Fact the plan uses |
+| --- | --- | --- |
+| Rust | 1.99.1, 13 Oct 2026 | Edition 2024. |
+| `clap` | 4.6.7 | - |
+| `glob` | 0.3.4 | `glob()` iterates lazily and returns `Paths`. A pattern with no wildcards matches literally. `symlink_metadata` does not follow a link, so a broken symbolic link still counts as existing, the way `lexists` did. `MatchOptions::require_literal_leading_dot` makes a pattern skip dot-directories, as Python did. |
+| `tempfile` | 3.27.0 | `tempdir()` in integration tests. |
+
+These pins are a snapshot. Renovate updates them like any other dependency. A bump that changes a behaviour
+this plan states gets a plan update in the same pull request.
 
 ### Files
 
-Sources are `https://github.com/siutsin/heartbeats`, `https://github.com/siutsin/images` and
-`https://github.com/siutsin/telegram-jung2-bot`, read on 25 Oct 2026. An empty Source cell means a new file.
+| Path | Content |
+| --- | --- |
+| `Cargo.toml` | Package `nine-up`, `[[bin]]` name `9up`, edition 2024, version `0.1.0`. The lint policy (below). Dependencies arrive one per build step. |
+| `Cargo.lock` | Generated and committed. |
+| `clippy.toml` | `allow-unwrap-in-tests = true` and `allow-expect-in-tests = true`. |
+| `src/main.rs` | Entry point, the `Cli` struct, the command enum, dispatch, colour, and all output. In Step 1 it renders headers, names, comments and path errors. Report rendering arrives with `update.rs` in Step 2. |
+| `src/bookmarks.rs` | The bookmark file: read, normalise, add, delete, clean, save. |
+| `src/discover.rs` | Path expansion, glob expansion, missing-path handling and the depth-limited search. Runs no `git`. |
+| `src/update.rs` | Arrives in Step 2. See Module Breakdown. |
+| `tests/cli.rs` | Integration tests for the binary. |
+| `.editorconfig` | Final newline, UTF-8, LF, trim trailing whitespace. Two-space indent for YAML and Markdown only. Rust follows `cargo fmt`. `*.md`: no trailing-whitespace trim, line length off. |
+| `.gitignore` | `/target/` and `/.scratchpad/`. |
+| `.github/workflows/lint.yaml` | Exists, with the `markdown` job. Step 1 adds the `rust` job. Details under CI Workflows. |
+| `.github/workflows/test.yaml` | One `test` job: `cargo test --locked` on `ubuntu-latest` and `macos-latest`. |
+| `CLAUDE.md` | One line: `@AGENTS.md`. |
 
-| File                            | Content                                                                                                                                                              | Source                                                                                                                                                     |
-|---------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `Cargo.toml`                    | Package `nine-up`, `edition = "2024"`, `description`, `[[bin]] name = "gitup"` with `path = "src/main.rs"`, the lint policy below                                    |                                                                                                                                                            |
-| `Cargo.lock`                    | Committed, because this is a binary                                                                                                                                  |                                                                                                                                                            |
-| `rust-toolchain.toml`           | Exists already. `channel = "1.99.1"`, `profile = "minimal"`, `components = ["clippy", "rustfmt"]`                                                                    |                                                                                                                                                            |
-| `clippy.toml`                   | `allow-unwrap-in-tests = true`, `allow-expect-in-tests = true`                                                                                                       |                                                                                                                                                            |
-| `src/main.rs`                   | `Cli` with `_help` and `_version` only, and a `main` that parses it                                                                                                  |                                                                                                                                                            |
-| `tests/cli.rs`                  | One test that runs `env!("CARGO_BIN_EXE_gitup")` with `-v` and checks the output                                                                                     |                                                                                                                                                            |
-| `mise.toml`                     | Exists already. It pins tools only, with no tasks. `zizmor` is pinned for an optional local `zizmor .github/workflows` run. It is not one of the four checks         |                                                                                                                                                            |
-| `.editorconfig`                 | See Copied Text                                                                                                                                                      | `telegram-jung2-bot/.editorconfig`, `images/.editorconfig`                                                                                                 |
-| `.gitignore`                    | `/target`, `.scratchpad/`, `.idea/`, `.DS_Store`                                                                                                                     |                                                                                                                                                            |
-| `.markdownlint-cli2.jsonc`      | Exists already: line length 140, tables exempt, `**/.scratchpad/**` and `target/**` ignored                                                                          | `heartbeats/.markdownlint-cli2.jsonc`, with line length 140, not 180                                                                                       |
-| `renovate.json5`                | Exists already. Its content is final                                                                                                                                 | `heartbeats/renovate.json5`. Go, Docker and Helm rules dropped. The `ci` commit type rule waits for release-please                                         |
-| `.github/workflows/lint.yaml`   | See CI Workflows                                                                                                                                                     | `heartbeats/.github/workflows/lint.yaml`: the `on` block, one job per check, the checkout step. `mise-action` replaces `setup-node`. Go and Docker dropped |
-| `.github/workflows/test.yaml`   | See CI Workflows                                                                                                                                                     | `heartbeats/.github/workflows/test.yaml`: the `on` block and permissions. Go setup swapped for `rustup` and `rust-cache`. Matrix adds macOS                |
-| `.github/workflows/zizmor.yaml` | See CI Workflows                                                                                                                                                     | `heartbeats/.github/workflows/zizmor.yaml`, as is                                                                                                          |
-| `AGENTS.md`                     | Rules, a pointer to `README.md` and one verify line with the four checks                                                                                             | Exists already. `Rules` and `Verify` from `heartbeats/AGENTS.md`. Go rules swapped for Rust ones                                                           |
-| `CLAUDE.md`                     | `# Claude Instructions`, a blank line, then `@AGENTS.md`                                                                                                             | `images/CLAUDE.md`                                                                                                                                         |
-| `README.md`                     | Exists already. The Install section, marked as planned, the Development checks and a one line Credit section that links `https://github.com/earwig/git-repo-updater` |                                                                                                                                                            |
-| `LICENSE`                       | Exists already. MIT, with Ben Kurtovic's upstream copyright line beside the port's line, because logic and strings are ported                                        |                                                                                                                                                            |
+Already in place, unchanged unless a step says otherwise: `rust-toolchain.toml`, the `claude.yaml` and
+`zizmor.yaml` workflows, `mise.toml` (pins node, markdownlint and zizmor) and `.markdownlint-cli2.jsonc`.
+`AGENTS.md` is updated (the Feature Spec is the reference; the verify line lists the four checks) and
+`README.md` is updated (Development lists the four checks; the credit says inspired by, not a port). The
+workflows, `mise.toml` and the markdownlint configuration are baseline: they stay, and the steps build on
+them.
 
-Not added: `rustfmt.toml`, `deny.toml`, `.cargo/config.toml`, `build.rs`, and a workspace.
-Add any other file only on a real need.
+Not added: `rustfmt.toml` (the defaults), `deny.toml`, `.cargo/config.toml`, `build.rs`, a cargo workspace.
 
 ### Cargo.toml Policy
 
@@ -430,204 +293,168 @@ unsafe_code = "forbid"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
 unwrap_used = "warn"
 expect_used = "warn"
 dbg_macro = "warn"
-print_stdout = "warn"
-print_stderr = "warn"
-allow_attributes = "warn"
-allow_attributes_without_reason = "warn"
 ```
 
-1. Lints are `warn` in the file and fail the gate through `-D warnings`. A local `cargo build` stays usable while you edit.
-2. Use `#[expect(lint, reason = "...")]`, never `#[allow]`. The last two lints enforce it.
-3. Nothing uses `print!`, `println!` or `eprintln!`. `main.rs` writes with `writeln!` to a locked stdout. Rendering
-   functions return `io::Result<()>` and use `?` on each write. A closed pipe then ends the run quietly, where `println!`
-   would panic.
-4. `main` returns `std::process::ExitCode`, not `Result`, because a `Result` from `main` prints its own `Error: <Debug>`
-   text. A stdout write error gives `ExitCode::SUCCESS`, as in item 3. A failed bookmark write gives `ExitCode::FAILURE`
-   after its stderr line. Only clap's `exit()` ends the process early.
-5. `pedantic` includes `struct_excessive_bools`, which fires above 3 `bool` fields. `Cli` gets
-   `#[expect(clippy::struct_excessive_bools, reason = "one field per Python flag")]` in the step that adds the fourth bool.
-   An earlier `expect` is unfulfilled, and that fails the gate too.
-6. Dead code and never read fields fail `-D warnings`. So each step adds only what it reads. See Build Order.
-7. No `rust-version`. The toolchain file pins the compiler.
+- `warn` in the file, and `-D warnings` on the command line turns each warning into an error. The local check
+  and CI match exactly.
+- `unsafe` code is forbidden.
+- Where a lint cannot hold, use `#[allow(...)]` with a comment that gives the reason. `main` returns
+  `std::process::ExitCode`, so no `process::exit` call exists outside it.
+- Output: render functions take a writer (`impl Write`). `main` passes a locked standard output and
+  ignores `BrokenPipe`, so a closed pipe ends the run quietly with the success code. Unit tests pass a
+  `Vec<u8>`.
 
 ### Local Checks
 
-Cargo is the Rust command runner, so a `Makefile` is not idiomatic here. `mise.toml` pins tools only and has no tasks.
-All Rust commands are plain cargo. The four checks are listed once, in the `README.md` Development section. They run as
-plain commands, locally and in CI. `markdownlint-cli2` comes from the mise tool pin.
+Run all four before every commit, and before every push. They are the whole gate.
 
-Other work uses cargo directly: `cargo fmt`, `cargo build --locked --release` and `cargo install --locked --path .`.
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+markdownlint-cli2 '**/*.md'
+```
+
+### Clap Notes
+
+- Derive API. `Cli` is a `Parser` struct with the global bookmark-file option and an optional subcommand.
+  The commands are a `Subcommand` enum: `Update`, `Add`, `Delete`, `List`, `Clean`, `Exec`.
+- The bare form: `Cli` also flattens the update arguments and sets `args_conflicts_with_subcommands`, so
+  `9up [paths...]` parses as an update.
+- The binary name comes from `#[command(name = "9up")]`, because the package name is `nine-up`. Help and
+  version use clap's built-in flags, so `--version` prints `9up <version>` from the name alone.
+- `update`'s `--depth` needs `allow_negative_numbers`, or clap reads `-1` as a flag. `exec` shares the
+  depth argument.
+- `add` and `delete` take `num_args(1..)` path lists. `exec` takes optional paths, then
+  `trailing_var_arg` after a required `--`: everything after `--` is the command's argv, untouched.
+- Path and value fields are `String`, not `PathBuf`: an empty `-b ""` must parse, and it means the default
+  path. `PathBuf` rejects empty values at parse time.
 
 ### CI Workflows
 
-Every action pins a full commit SHA with a version comment. Every checkout sets `persist-credentials: false`. Every job
-grants `contents: read`, and the zizmor job adds `security-events: write`. Lint and test run on push and pull request to
-`master`. Zizmor keeps its own workflow path filter.
+The baseline workflows stay: `claude.yaml` (Claude review), `zizmor.yaml` (workflow security lint, SARIF
+upload commented out while the repository is private) and `lint.yaml` with its `markdown` job. Step 1 adds
+the Rust jobs, each with `permissions: contents: read` and `persist-credentials: false` on checkout. The Rust
+jobs run the Local Checks commands.
 
-| Workflow      | Jobs                                                                                                                              |
-|---------------|-----------------------------------------------------------------------------------------------------------------------------------|
-| `lint.yaml`   | `rust`: `cargo fmt --check`, then `cargo clippy --locked --all-targets -- -D warnings`. `markdown`: `markdownlint-cli2 '**/*.md'` |
-| `test.yaml`   | `test`: `cargo test --locked` on a matrix of `ubuntu-latest` and `macos-latest`                                                   |
-| `zizmor.yaml` | `zizmor` with the SARIF upload. See Copied Text                                                                                   |
+- `lint.yaml` gains a `rust` job on `ubuntu-latest`: the format check and clippy.
+- `test.yaml` is new: one `test` job on `ubuntu-latest` and `macos-latest`, running `cargo test --locked`.
 
-Each Rust job runs `rustup toolchain install` with no argument, which reads `rust-toolchain.toml`. Then it runs
-`Swatinem/rust-cache`, pinned by SHA. Look up each SHA from the action's release tag when you write the file. The Rust jobs
-call cargo directly and do not install mise. Only the `markdown` job uses mise, through `jdx/mise-action`. It installs the
-tools in `mise.toml`, Node included. Then the job runs `markdownlint-cli2 '**/*.md'`.
-
-Deferred until milestone 1 ships, because they depend on each other: `commit.yaml`, release-please, release binaries,
-`claude.yaml`, `codeql.yaml` and the Homebrew formula.
-
-### Copied Text
-
-The `.editorconfig`: `[*]` and YAML from `telegram-jung2-bot`, `[*.md]` for this repo.
-
-```ini
-root = true
-
-[*]
-indent_style = space
-indent_size = 4
-end_of_line = lf
-charset = utf-8
-trim_trailing_whitespace = true
-insert_final_newline = true
-
-[*.{yml,yaml}]
-indent_size = 2
-
-[*.md]
-max_line_length = 140
-```
-
-The `renovate.json5` exists already in the repo root. Read it there.
-
-Renovate's `cargo` and `rust-toolchain` managers are built in, so no custom manager is needed. The `rust-toolchain` manager
-matches `rust-toolchain.toml`.
-
-The `zizmor.yaml`: copy `.github/workflows/zizmor.yaml` from `https://github.com/siutsin/heartbeats` as is.
-
-`lint.yaml` and `test.yaml` reuse its checkout step, `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1`
-with `persist-credentials: false`. The `markdown` job adds
-`jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2` before `markdownlint-cli2 '**/*.md'`. This tag was checked on
-25 Oct 2026. It is the newest one past the 3 day Renovate age.
+Each Rust job installs the toolchain with `rustup` (no argument, so it reads `rust-toolchain.toml`), then uses
+`Swatinem/rust-cache` for the build cache. Actions are pinned to a full commit SHA, with the version in a
+comment.
 
 ### Done When
 
-1. The four checks in the `README.md` Development section are green locally.
-2. The four checks are green in CI on a pull request. `cargo test` is green on both operating systems.
-3. `cargo run -- -v` prints `gitup 0.1.0`.
-4. `README.md` has the Install section, marked as planned, the Development checks and the Credit section.
-5. The first Renovate run shows `rust-toolchain.toml` and the `Cargo.toml` crates as tracked.
+- All four local checks are green, and CI is green.
+- `cargo run -- --version` prints `9up 0.1.0`.
+- `README.md` has three sections: Install ("Not yet. `Cargo.toml` arrives in Step 1." until the crate lands,
+  then the `cargo install --path .` form), Development (the four checks) and Credit.
+- The first Renovate run tracks `rust-toolchain.toml` and the crates.
 
 ## Module Breakdown
 
-Rule: one flat binary crate with four source files. No `lib.rs`, no workspace, no traits. A file splits only when it has a
-second reason to change. Unit tests sit inline. Integration tests run the built binary.
+Four files in `src/`, a flat crate, no `lib.rs`. `main` reads the environment (`HOME` and `XDG_CONFIG_HOME`)
+and passes paths down. No other file reads the environment.
 
-| File           | Owns                                                                                              | Surface                                                  | Lines |
-|----------------|---------------------------------------------------------------------------------------------------|----------------------------------------------------------|-------|
-| `main.rs`      | `Cli`, the `-e` split, the action order, every write to stdout, colour                            | `main`                                                   | ~260  |
-| `bookmarks.rs` | File path, load, save, and add, delete and clean on a `Vec<String>`. No printing                  | `default_path`, `load`, `save`, `add`, `delete`, `clean` | ~80   |
-| `discover.rs`  | One path to repos: `~` expansion, normalise, repo check, comment, glob, depth walk, names. No git | `Repo`, `Resolved`, `resolve`, `expand`, `normalise`     | ~120  |
-| `update.rs`    | `run`, workdir, git queries, porcelain parse, fetch error clean, branch logic, `-e` output split  | `Report`, `Step`, `Outcome`, `update_repo`, `exec_repo`  | ~280  |
+| File | Estimated lines | Contents |
+| --- | --- | --- |
+| `main.rs` | ~230 | `Cli` and the command enum, dispatch, banner, colour, path headers, and rendering of every report. The only file that writes output, apart from the usage error. |
+| `bookmarks.rs` | ~80 | `load`, `save`, `normalize`, `has`. No output. |
+| `discover.rs` | ~100 | `expand_home`, `glob_paths`, `resolve` and the depth-limited search. No `git` calls. |
+| `update.rs` | ~260 | `run` (the one child-process choke point), `repo_info`, `update_repo`, `exec_repo`. No output. |
 
-Split `update.rs` only if it grows past about 400 lines.
+### Types
 
-### Data Flow
+```rust
+// discover.rs — Repo carries what discovery can know without git.
+// update.rs asks git (rev-parse) for the working directory when it needs it.
+struct Repo { name: String, path: PathBuf }
 
-```text
-Cli -> paths and bookmarks -> discover::resolve -> Resolved -> update_repo or exec_repo -> Report -> main renders
+enum Resolved {
+    Repos(Vec<Repo>),
+    Comment(String),
+    PathError(String),
+}
+
+// update.rs — a Report carries data only, so milestone 2 can collect
+// reports from many threads and main can render them in path order.
+struct Report { name: String, steps: Vec<Step> }
+
+enum Step {
+    Fetch { remote: String, outcome: FetchOutcome },
+    Branch { name: String, outcome: BranchOutcome },
+    Error(String),
+}
+
+enum FetchOutcome {
+    Changed(Vec<(Kind, Vec<String>)>),
+    UpToDate,
+    NoRefspec,
+    Error(Vec<String>),
+}
+
+enum Kind {
+    NewBranch,
+    NewTag,
+    BranchUpdate,
+}
+
+enum BranchOutcome {
+    Updated { from: String, to: String },
+    UpToDate,
+    Skipped(String),
+    Error(String),
+}
 ```
 
-1. `Repo` is `{ name: String, git_dir: PathBuf, workdir: Option<PathBuf> }`. `discover.rs` sets `workdir` for the `.git`
-   cases and a linked worktree admin dir. `None` means the path is another git dir, and `update.rs` asks git for the
-   workdir, as in Git Commands Per Repo.
-2. `Resolved` is `Repos { base, repos }`, `Comment(String)`, `Missing(PathBuf)` or `NotRepo(PathBuf)`.
-3. `Report` is `{ name, steps: Vec<Step> }`.
-4. `Step` is `Fetch(remote, Outcome)`, `Update(branch, Outcome)`, `Error(String)` or `Output(String)`.
-5. `Outcome` is `Fetched(Vec<(Kind, Vec<String>)>)`, `UpToDate`, `Done`, `Skipped(&'static str)` or `Failed(String)`.
-6. `Kind` is `NewBranch`, `NewTag` or `BranchUpdate`. `main.rs` picks the singular or plural label from the count.
-7. Bookmark functions return the lists to print, such as added and already bookmarked. `main.rs` saves, then prints.
-8. `bookmarks::default_path` and `discover::expand` take the `HOME` and `XDG_CONFIG_HOME` values as arguments, and
-   `discover::resolve` passes `HOME` on. Only `main.rs` reads them, with `std::env::var_os`. Edition 2024 makes
-   `env::set_var` unsafe and `unsafe_code = "forbid"` bans it, so tests pass values instead.
-
-### Rust Conventions
-
-A scratch crate on Rust 1.99.1, edition 2024 and clap 4.6.7 checked items 3, 5 and 6 under the lint policy.
-
-1. Arguments borrow: `&Path`, `&str` and slices. Return values own: `PathBuf`, `String` and `Vec`. No `Cow` and no clone
-   to satisfy the borrow checker.
-2. `run` is `fn run<S: AsRef<OsStr>>(dir: &Path, argv: &[S]) -> io::Result<Output>`. It takes the program from
-   `argv.split_first()` and calls `Command::new`, `args`, `current_dir`, `env`, `stdin(Stdio::null())` and `output()`.
-   So every git call starts its argv with `"git"`, as in `&["git", "fetch", "--porcelain", remote]`, and `-e` passes its
-   `Vec<String>` as is. Name the `split_first` rest binding `rest`, because pedantic `similar_names` rejects `args` beside `argv`.
-3. Use `let else` for early returns and `if let` chains where they read better than nested `if let`. Edition 2024 allows
-   both.
-4. Use iterator chains, `split_first` and slice patterns, not index loops. The branch loop iterates the sorted names and
-   updates the snapshot map, so it does not borrow the map while it walks it.
-5. Modules are private `mod` items. Items that another module uses are `pub(crate)`. Pedantic `must_use_candidate` and
-   `missing_errors_doc` do not fire on these items in a binary crate.
-6. Each module has a `//!` line, and each `pub(crate)` item has a `///` line. `Report` has `#[must_use]`, because a dropped
-   report loses output.
-7. Each data type derives `Debug`. Types that a test compares also derive `PartialEq` and `Eq`. `Kind` also derives
-   `Clone` and `Copy`. No other derive until a caller needs it.
-8. Unit tests sit in `#[cfg(test)] mod tests` at the end of each file. Integration tests live in `tests/`.
-
-### Not Added
-
-- `report.rs`, `cli.rs`, `git.rs` and `exec.rs`: each has one caller and changes with it. Printing in one file is the
-  concurrency rule.
-- A `GitBackend` trait: one implementation. Tests use real temporary repos.
-- A `config` module, a `util` module, `Repo` methods and error enums: the only setting is a `Cli` field, the only shared
-  helpers are `discover::expand` and `discover::normalise`, and git failures are report text.
-- `impl Display` for `Step` and `Outcome`: colour is a runtime choice, and `Display` has no way to receive it. One render
-  function in `main.rs` takes the colour flag and uses `write!`. `Kind` gives its label through a `match`.
-
-### Tests
-
-| Layer         | Where                 | Method                                                                                                                                                                                                                                                                                                                                                                 |
-|---------------|-----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Unit          | Inline `#[cfg(test)]` | Table driven with named cases for pure functions. Porcelain parse and names: `refs/remotes/origin/feat/x` is `feat/x`, a mirror `refs/heads/feat` is `feat`, a `*` line under `refs/heads/` is a new branch. Fetch error clean. Normalise. Repo names                                                                                                                  |
-| `-e` split    | `main.rs` tests       | `echo # x` gives `["echo", "#", "x"]`. `a#b` gives `["a#b"]`. `a 'b` fails. `" "` gives no words. `"a\tb"` keeps the backslash. `a"b c"d` gives `["ab cd"]`. `''` gives `[""]`. `a\` fails. `"\f"` gives `["\f"]`                                                                                                                                                      |
-| `-e` output   | `update.rs` tests     | `a\n` gives `["a"]`. `a\n\nb\n` gives `["a", "", "b"]`. `a\rb` gives `["a", "b"]`. `a\r\nb` gives `["a", "b"]`. An empty line renders as 8 spaces                                                                                                                                                                                                                      |
-| Bookmarks     | `bookmarks.rs` tests  | `-a x x` adds one and reports the second as already bookmarked. `-d x` on `[x, x]` leaves `[x]`. `-b ""` uses the default path. `default_path` with an XDG value of `~/cfg` expands the `~`. `clean` keeps a broken symlink. `-a ""` adds the current directory. `-a ~/a/../b` stores `~/b`. `-a ~user/x` stores `~user/x`. Invalid UTF-8 in the file is replaced      |
-| Discovery     | `discover.rs` tests   | `tempfile` trees: depth `0`, `3` and `-1`, a glob, a comment, a missing path, a symlinked dir, a broken symlink with `0 repos`, a linked worktree, a linked worktree admin dir, a submodule `.git` file with a relative `gitdir`, a bare repo, an empty path, a `chmod 000` directory that the walk skips. `expand` keeps `~user` and `$HOME` as typed                 |
-| Repo errors   | `tests/cli.rs`        | One case each: `-c` with a detached HEAD, `-c` with no tracked remote, `-c` with `branch.<b>.remote` naming an unconfigured remote, no remotes. Each prints only its error line, with no fetch and no branch line                                                                                                                                                      |
-| Fetch table   | `tests/cli.rs`        | A bare repo runs in its git dir. A remote with no fetch refspec prints `Fetching <remote>: skipped: no configured refspec.` A second remote fails after one worked. `-p` prunes a deleted branch. A `--mirror` clone. `-c` on an unborn branch with an upstream in config. A git dir with a relative `core.worktree` runs in the worktree resolved against the git dir |
-| Branch table  | `tests/cli.rs`        | No upstream, up to date, fast-forward, diverged, unrelated history, dirty tree, detached HEAD, gone upstream, local upstream that moved earlier, a tag named like the branch. A branch checked out in another worktree prints `Updating <branch>: error: ...`                                                                                                          |
-| Exec and exit | `tests/cli.rs`        | `-e ""` runs a normal update. `-e " "` and `-e "a 'b"` exit `2` with no banner. `-h` and `-v` print no banner. A bad bookmark write exits `1`. `-e nosuchcmd` prints `Error: nosuchcmd: <io error>`. `-a x -e " "` exits `2` and does not write the bookmark file                                                                                                      |
-| Parity        | Manual, Step 5        | One fixture cannot serve two runs, because the first run updates it. So make two copies of one fixture with local file remotes. Run Python `gitup` on one copy and `target/release/gitup` on the other, both through a pipe, then diff the output. No diff outside the Deliberate Deviations, after removing Python's progress counter text                            |
-
-No test changes the process environment. Unit tests pass `HOME` and `XDG_CONFIG_HOME` values as arguments. Each
-integration test runs `env!("CARGO_BIN_EXE_gitup")` on real git repos in `tempfile` dirs, and sets the child environment
-with `Command::env`. `HOME` and `XDG_CONFIG_HOME` point to its temporary dir. It also sets `GIT_CONFIG_GLOBAL=/dev/null`,
-`GIT_CONFIG_NOSYSTEM=1` and fixed author and committer variables. No network. The suite must run in under 10 seconds.
-Split `tests/cli.rs` only if it grows past about 400 lines.
-
-`allow-unwrap-in-tests` covers only `#[test]` functions and `#[cfg(test)]` code. A plain helper in `tests/cli.rs` that
-calls `unwrap` fails clippy. So the helpers, such as the repo builder and the run wrapper, sit in a `#[cfg(test)] mod`
-inside `tests/cli.rs`.
+Milestone 2 needs no type change: run `update_repo` on many threads, collect the `Report` values, render in
+order.
 
 ## Build Order
 
-Work starts when this plan is merged into `master`. Its Module Breakdown is the contract for Steps 2 to 4. Each step is
-one pull request that ends green on the four checks in the `README.md` Development section. Each step wires its code into
-`main.rs`. It adds only the `Cli` fields, struct fields, variants and constants that it reads. Anything unread fails
-`-D warnings`. Each crate arrives in the step that first uses it: `clap` in 1, `glob` and `tempfile` in 2. The order puts
-the least git heavy code first.
+One pull request per step, in order. Each pull request ends with all four local checks green.
 
-| Step | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Done when                                                                                                           |
-|------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------|
-| 1    | Foundation and build infra, as above                                                                                                                                                                                                                                                                                                                                                                                                                       | Step 1 Done When                                                                                                    |
-| 2    | Bookmarks and discovery, which share `expand`, `normalise` and `glob`. `Cli` gains `paths`, `add`, `delete`, `list`, `clean`, `bookmark_file` and `depth`. `bookmarks.rs`. `discover.rs` with `resolve` and `Repo` with `name` only. Banner and colour in `main.rs`. `main.rs` resolves each given path, then the bookmarks when no other action ran. It prints comments, headers, names, path errors and the no bookmarks hint. Add `glob` and `tempfile` | Each bookmark message and every discovery header and name matches Python                                            |
-| 3    | `Cli` gains `current_only`, `fetch_only`, `prune` and the `struct_excessive_bools` expect. `Repo` gains `git_dir` and `workdir`. `update.rs` with `run`, workdir, fetch and branch logic. `main.rs` renders reports                                                                                                                                                                                                                                        | The repo error, fetch and branch tables pass on real temporary repos                                                |
-| 4    | `Cli` gains `exec` and `update`. `exec_repo`, the `-e` split and the full action order                                                                                                                                                                                                                                                                                                                                                                     | Every Behaviour item has a test                                                                                     |
-| 5    | Parity run on two copies of one fixture, as in the Tests Parity row. A separate timing run of both tools on a real bookmarks file. README usage and `cargo install --locked --path .`. Update the `README.md` Install text. Install Python `gitup` 0.5.2 from the upstream tag `v0.5.2`, for example with `pipx install git+https://github.com/earwig/git-repo-updater@v0.5.2`                                                                             | No diff outside the Deliberate Deviations, after removing Python's progress counter text. Both timings are recorded |
+| Step | Content | Crates that arrive |
+| --- | --- | --- |
+| 1 | Crate, lint policy, CI, `Cli` with the bookmark commands, `bookmarks.rs`, `discover.rs`. The bookmark commands work. Discovery prints headers, names, comments and path errors. | `clap`, `glob`, `tempfile` |
+| 2 | `update.rs`: `run`, `repo_info`, remotes, fetch, branch logic, and the `update` command with its options. Reports replace the name list under each header. | none |
+| 3 | The `exec` command, the feature check and release prep. | none |
 
-The Step 5 timing of Python `gitup` is the baseline for milestone 2.
+Step 3 in detail: the feature check. Build one fixture directory tree with repositories in known states
+(ahead, behind, diverged, no upstream, bare). Make two copies. Run Python `gitup` on one copy and `9up` on
+the other, with equivalent invocations. Compare the result, not the text: the branch positions, the
+bookmark file and the exit codes must match. Then finish the README: usage, the commands, and the
+`cargo install --path .` line.
+
+## Tests
+
+Tests assert behaviour. Output assertions check the facts a line carries (the repository name, the outcome,
+the reason), never the exact wording, so a wording change does not rewrite the suite.
+
+Three layers:
+
+- Unit tests inside each `src` file, for the pure parts: path normalisation, the reference-line reading in
+  `update.rs`, and report rendering in `main.rs`.
+- Integration tests in `tests/cli.rs`, which run the compiled binary in temporary directories with real `git`
+  repositories. The fixtures run `git init -b main` and local file-path remotes, so the suite needs no network.
+- `tests/cli.rs` sets `HOME` to a temporary directory and passes `-b` with an explicit path, so no test reads
+  the developer's real bookmark file. Colour is off in tests (not a terminal). Set `GIT_CONFIG_NOSYSTEM=1` and
+  pass `-c init.defaultBranch=main` where a fixture needs it, so a developer's global git configuration cannot
+  change a result.
+
+Behaviour tables, one row per case:
+
+| Area | Cases |
+| --- | --- |
+| Commands | Bare `9up` updates the bookmarks and nothing else. Bare `9up <path>` updates only that path. `update` with no paths updates the bookmarks. `add x` adds x and updates nothing. `delete`, `list` and `clean` each do only their own job. `-b` works on every command. |
+| Bookmarks | Add stores the absolute, normalised path. Add of an existing path reports it as already bookmarked. A relative add resolves against the current directory. Delete matches exactly, after normalisation. Delete removes only the first match. Delete of a missing path reports it as not bookmarked. List prints the paths in file order. Clean removes a missing path and keeps an existing one. A comment line survives add and delete, in place. Clean drops it. |
+| Discovery | A repository at the path. Bare repositories: at the path, below the path, and at depth 0. A repository below the path, at each depth from 0 up. A `.git` file (a linked worktree) counts. A directory with no repositories, and an empty directory: header with a count of 0. A file given as a path. A symbolic link to a directory is followed. A broken symbolic link as a path: header with a count of 0. A comment line: never searched, and its text prints with the `#` characters stripped. A glob bookmark: matches expand; `**` recurses; no match means missing. A `*` pattern does not match a dot-directory. The search does not descend into a found repository. Repositories print in name order. Display names: a repository below the base is named by its path relative to the base. A path that is itself a repository is named by its last component. A glob match is named relative to the deepest common parent of the base and the repository. |
+| Update | Up to date. Behind: fast-forward. Ahead. Diverged: skipped, fast-forward not possible. No upstream: skipped. Missing upstream reference: skipped. Local changes block the current branch: skipped with the uncommitted-changes reason. `--current-only`: only the tracked remote fetches, and the branch step still visits every branch. An unborn branch with `--current-only`: the tracked remote fetches, and the branch step visits nothing. `--fetch-only`: no branch step. `--prune`: a branch deleted on the remote disappears locally. Two remotes: both fetch. First fetch fails: the second remote never fetches, and the branch step still runs. A remote with no reference lines: skip line. A new branch and a new tag arrive, named by the naming rule. A detached HEAD. A bare repository. |
+| Exec | The command runs in the working directory. Standard output prints before standard error. The exit status is ignored. A missing command prints the error line. Arguments after `--` reach the command untouched, quotes included. A `--depth` on exec limits the search the way update's does. `exec` with no command is a usage error, and the bookmark file is unchanged. With no bookmarks and no paths, `exec` prints nothing. |
+
+The clippy configuration allows `unwrap` and `expect` in tests only. Test helper functions can use both,
+with the reason in the `clippy.toml` comment.
