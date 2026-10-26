@@ -5,6 +5,7 @@ Do not implement before this plan is merged into `master`.
 
 Setup is in `README.md`. Verify every change with `cargo fmt --check`,
 `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked` and `markdownlint-cli2 '**/*.md'`.
+Coverage is not a gate: `cargo llvm-cov --locked` reports it (the tool is pinned in `mise.toml`).
 
 ## Rules
 
