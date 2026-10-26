@@ -151,6 +151,15 @@ fn is_update_option(token: &str) -> bool {
             "--current-only" | "--fetch-only" | "--prune" | "--depth"
         ) || token.starts_with("--depth=");
     }
+    // Attached depth: -t3, -t-1 and -t=3.
+    if let Some(rest) = token.strip_prefix("-t")
+        && rest
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit() || c == '-' || c == '=')
+    {
+        return true;
+    }
     token.len() > 1
         && token.starts_with('-')
         && token[1..]
@@ -162,16 +171,27 @@ fn main() -> ExitCode {
     let cli = Cli::parse_from(argv());
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    let _ = writeln!(out, "9up");
-    let _ = writeln!(out);
+    if let Err(err) = writeln!(out, "9up").and_then(|()| writeln!(out)) {
+        return if err.kind() == io::ErrorKind::BrokenPipe {
+            ExitCode::SUCCESS
+        } else {
+            eprintln!("9up: {err}");
+            ExitCode::FAILURE
+        };
+    }
     // The composition root: every service and resolved value is built
     // here and passed down in the context.
+    // `list` and `clean` never need the cwd (bookmarks are absolute),
+    // so a deleted or unreadable cwd must not fail them.
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
-        Err(err) => {
-            eprintln!("9up: {err}");
-            return ExitCode::FAILURE;
-        }
+        Err(err) => match &cli.command {
+            Some(Command::List) | Some(Command::Clean) => PathBuf::from("/"),
+            _ => {
+                eprintln!("9up: {err}");
+                return ExitCode::FAILURE;
+            }
+        },
     };
     let config_dir = dirs::config_dir();
     let bookmark_file = bookmark_path(&cli, config_dir.as_deref());
@@ -185,6 +205,8 @@ fn main() -> ExitCode {
     };
     match run(&mut app, &cli) {
         Ok(code) => code,
+        // A closed pipe ends the run quietly, with the success code.
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("9up: {err}");
             ExitCode::FAILURE
@@ -214,9 +236,9 @@ fn add(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
     for raw in paths {
         let normalized = bookmarks::normalize(raw, &app.cwd);
         if bookmarks::has(&entries, &normalized) {
-            let _ = writeln!(out, "{normalized} is already bookmarked.");
+            writeln!(out, "{normalized} is already bookmarked.")?;
         } else {
-            let _ = writeln!(out, "Added {normalized}.");
+            writeln!(out, "Added {normalized}.")?;
             entries.push(normalized);
         }
     }
@@ -233,9 +255,9 @@ fn delete(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
         if let Some(index) = entries.iter().position(|entry| entry == &normalized) {
             entries.remove(index);
             changed = true;
-            let _ = writeln!(out, "Deleted {normalized}.");
+            writeln!(out, "Deleted {normalized}.")?;
         } else {
-            let _ = writeln!(out, "{normalized} is not bookmarked.");
+            writeln!(out, "{normalized} is not bookmarked.")?;
         }
     }
     if changed {
@@ -248,10 +270,10 @@ fn list(app: &mut App) -> io::Result<ExitCode> {
     let out = &mut *app.out;
     let entries = bookmarks::load(&*app.sys, &app.bookmark_file);
     if entries.is_empty() {
-        let _ = writeln!(out, "No bookmarks.");
+        writeln!(out, "No bookmarks.")?;
     }
     for entry in &entries {
-        let _ = writeln!(out, "{entry}");
+        writeln!(out, "{entry}")?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -275,7 +297,7 @@ fn update(app: &mut App, args: &UpdateArgs) -> io::Result<ExitCode> {
     let inputs: Vec<String> = if args.paths.is_empty() {
         let entries = bookmarks::load(&*app.sys, &app.bookmark_file);
         if entries.is_empty() {
-            let _ = writeln!(out, "No bookmarks. Add one with `9up add <path>`.");
+            writeln!(out, "No bookmarks. Add one with `9up add <path>`.")?;
             return Ok(ExitCode::SUCCESS);
         }
         entries
@@ -293,7 +315,7 @@ fn update(app: &mut App, args: &UpdateArgs) -> io::Result<ExitCode> {
                     app.home.as_deref(),
                     &app.cwd,
                     repos.len(),
-                );
+                )?;
                 let options = update::Options {
                     current_only: args.current_only,
                     fetch_only: args.fetch_only,
@@ -301,16 +323,16 @@ fn update(app: &mut App, args: &UpdateArgs) -> io::Result<ExitCode> {
                 };
                 for repo in &repos {
                     let report = update::update_repo(&*app.sys, &repo.path, &repo.name, &options);
-                    render_report(&report, colour, out);
+                    render_report(&report, colour, out)?;
                 }
             }
             discover::Resolved::Comment(text) => {
                 if !text.is_empty() {
-                    let _ = writeln!(out, "{text}");
+                    writeln!(out, "{text}")?;
                 }
             }
             discover::Resolved::PathError(message) => {
-                let _ = writeln!(out, "{}", paint(colour, RED, &message));
+                writeln!(out, "{}", paint(colour, RED, &message))?;
             }
         }
     }
@@ -324,7 +346,7 @@ fn print_header(
     home: Option<&Path>,
     cwd: &Path,
     count: usize,
-) {
+) -> io::Result<()> {
     let expanded = discover::expand_home(input, home);
     let header = bookmarks::normalize(&expanded.display().to_string(), cwd);
     let noun = if count == 1 {
@@ -332,19 +354,21 @@ fn print_header(
     } else {
         "repositories"
     };
-    let _ = writeln!(
+    writeln!(
         out,
         "{} ({count} {noun})",
         paint(colour, BOLD_WHITE, &header)
-    );
+    )?;
+    Ok(())
 }
 
-fn red_line(out: &mut dyn Write, colour: bool, text: &str) {
-    let _ = writeln!(out, "    {}", paint(colour, RED, text));
+fn red_line(out: &mut dyn Write, colour: bool, text: &str) -> io::Result<()> {
+    writeln!(out, "    {}", paint(colour, RED, text))?;
+    Ok(())
 }
 
-fn render_report(report: &update::Report, colour: bool, out: &mut dyn Write) {
-    let _ = writeln!(out, "  {}", paint(colour, BOLD_GREEN, &report.name));
+fn render_report(report: &update::Report, colour: bool, out: &mut dyn Write) -> io::Result<()> {
+    writeln!(out, "  {}", paint(colour, BOLD_GREEN, &report.name))?;
     for step in &report.steps {
         match step {
             update::Step::Fetch { remote, outcome } => match outcome {
@@ -368,49 +392,50 @@ fn render_report(report: &update::Report, colour: bool, out: &mut dyn Write) {
                         })
                         .collect();
                     let line = format!("Fetched {remote}: {}.", parts.join("; "));
-                    let _ = writeln!(out, "    {}", paint(colour, CYAN, &line));
+                    writeln!(out, "    {}", paint(colour, CYAN, &line))?;
                 }
                 update::FetchOutcome::UpToDate => {
-                    let _ = writeln!(out, "    {remote} is up to date.");
+                    writeln!(out, "    {remote} is up to date.")?;
                 }
                 update::FetchOutcome::NoRefspec => {
                     red_line(
                         out,
                         colour,
                         &format!("{remote} has no fetch refspec. Skipped."),
-                    );
+                    )?;
                 }
                 update::FetchOutcome::Error(lines) => {
                     for line in lines {
-                        red_line(out, colour, line);
+                        red_line(out, colour, line)?;
                     }
                 }
             },
             update::Step::Branch { name, outcome } => match outcome {
                 update::BranchOutcome::Updated { from, to } => {
                     let line = format!("{name} updated: {}..{}", &from[..7], &to[..7]);
-                    let _ = writeln!(out, "    {}", paint(colour, CYAN, &line));
+                    writeln!(out, "    {}", paint(colour, CYAN, &line))?;
                 }
                 update::BranchOutcome::UpToDate => {
-                    let _ = writeln!(out, "    {name} is up to date.");
+                    writeln!(out, "    {name} is up to date.")?;
                 }
                 update::BranchOutcome::Skipped(reason) => {
-                    red_line(out, colour, &format!("{name} skipped: {reason}."));
+                    red_line(out, colour, &format!("{name} skipped: {reason}."))?;
                 }
                 update::BranchOutcome::Error(message) => {
-                    red_line(out, colour, &format!("{name}: {message}"));
+                    red_line(out, colour, &format!("{name}: {message}"))?;
                 }
             },
-            update::Step::Error(message) => red_line(out, colour, message),
+            update::Step::Error(message) => red_line(out, colour, message)?,
         }
     }
+    Ok(())
 }
 
 fn clean(app: &mut App) -> io::Result<ExitCode> {
     let out = &mut *app.out;
     let entries = bookmarks::load(&*app.sys, &app.bookmark_file);
     if entries.is_empty() {
-        let _ = writeln!(out, "No bookmarks.");
+        writeln!(out, "No bookmarks.")?;
         return Ok(ExitCode::SUCCESS);
     }
     let mut kept = Vec::new();
@@ -423,13 +448,13 @@ fn clean(app: &mut App) -> io::Result<ExitCode> {
             kept.push(entry.clone());
         } else {
             removed = true;
-            let _ = writeln!(out, "Removed {entry}.");
+            writeln!(out, "Removed {entry}.")?;
         }
     }
     if removed {
         bookmarks::save(&*app.sys, &app.bookmark_file, &kept)?;
     } else {
-        let _ = writeln!(out, "Nothing to clean.");
+        writeln!(out, "Nothing to clean.")?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -468,26 +493,26 @@ fn exec(app: &mut App, paths: &[String], depth: i32, command: &[String]) -> io::
                     app.home.as_deref(),
                     &app.cwd,
                     repos.len(),
-                );
+                )?;
                 for repo in &repos {
                     let report = update::exec_repo(&*app.sys, &repo.path, &repo.name, command);
-                    let _ = writeln!(out, "  {}", paint(colour, BOLD_GREEN, &report.name));
+                    writeln!(out, "  {}", paint(colour, BOLD_GREEN, &report.name))?;
                     if let Some(error) = &report.error {
-                        red_line(out, colour, error);
+                        red_line(out, colour, error)?;
                     } else {
                         for line in report.stdout.lines().chain(report.stderr.lines()) {
-                            let _ = writeln!(out, "    {line}");
+                            writeln!(out, "    {line}")?;
                         }
                     }
                 }
             }
             discover::Resolved::Comment(text) => {
                 if !text.is_empty() {
-                    let _ = writeln!(out, "{text}");
+                    writeln!(out, "{text}")?;
                 }
             }
             discover::Resolved::PathError(message) => {
-                let _ = writeln!(out, "{}", paint(colour, RED, &message));
+                writeln!(out, "{}", paint(colour, RED, &message))?;
             }
         }
     }
@@ -531,12 +556,129 @@ mod tests {
     fn bare_options_without_a_path_mean_update() {
         assert_eq!(shim(&["9up", "-c"]), ["9up", "update", "-c"]);
         assert_eq!(shim(&["9up", "-p", "-f"]), ["9up", "update", "-p", "-f"]);
+        assert_eq!(shim(&["9up", "-t3"]), ["9up", "update", "-t3"]);
+        assert_eq!(shim(&["9up", "-t-1"]), ["9up", "update", "-t-1"]);
+        assert_eq!(shim(&["9up", "-t=3"]), ["9up", "update", "-t=3"]);
         assert_eq!(shim(&["9up", "--depth=2"]), ["9up", "update", "--depth=2"]);
         assert_eq!(
             shim(&["9up", "-b", "f", "-c"]),
             ["9up", "update", "-b", "f", "-c"]
         );
         assert_eq!(shim(&["9up", "-b", "f"]), ["9up", "-b", "f"]);
+    }
+
+    #[test]
+    fn print_header_shows_the_absolute_path_and_count() {
+        let mut out: Vec<u8> = Vec::new();
+        print_header(&mut out, false, "base", None, Path::new("/work"), 1).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "/work/base (1 repository)\n"
+        );
+        let mut out: Vec<u8> = Vec::new();
+        print_header(&mut out, false, "/srv/repos", None, Path::new("/work"), 2).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "/srv/repos (2 repositories)\n"
+        );
+        let mut out: Vec<u8> = Vec::new();
+        print_header(
+            &mut out,
+            false,
+            "~/repos",
+            Some(Path::new("/home/a")),
+            Path::new("/work"),
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "/home/a/repos (0 repositories)\n"
+        );
+    }
+
+    #[test]
+    fn render_report_prints_fetch_and_branch_lines() {
+        let report = update::Report {
+            name: "repo".to_owned(),
+            steps: vec![
+                update::Step::Fetch {
+                    remote: "origin".to_owned(),
+                    outcome: update::FetchOutcome::Changed(vec![(
+                        update::Kind::NewBranch,
+                        vec!["feat".to_owned()],
+                    )]),
+                },
+                update::Step::Fetch {
+                    remote: "upstream".to_owned(),
+                    outcome: update::FetchOutcome::UpToDate,
+                },
+                update::Step::Branch {
+                    name: "main".to_owned(),
+                    outcome: update::BranchOutcome::Updated {
+                        from: "1111111111111111111111111111111111111111".to_owned(),
+                        to: "2222222222222222222222222222222222222222".to_owned(),
+                    },
+                },
+                update::Step::Branch {
+                    name: "side".to_owned(),
+                    outcome: update::BranchOutcome::UpToDate,
+                },
+                update::Step::Branch {
+                    name: "old".to_owned(),
+                    outcome: update::BranchOutcome::Skipped(
+                        "a fast-forward is not possible".to_owned(),
+                    ),
+                },
+                update::Step::Error("No remotes.".to_owned()),
+            ],
+        };
+        let mut out: Vec<u8> = Vec::new();
+        render_report(&report, false, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("  repo\n"), "{text}");
+        assert!(
+            text.contains("Fetched origin: new branches: feat."),
+            "{text}"
+        );
+        assert!(text.contains("upstream is up to date."), "{text}");
+        assert!(text.contains("main updated: 1111111..2222222"), "{text}");
+        assert!(text.contains("side is up to date."), "{text}");
+        assert!(
+            text.contains("old skipped: a fast-forward is not possible."),
+            "{text}"
+        );
+        assert!(text.contains("No remotes."), "{text}");
+    }
+
+    #[test]
+    fn render_report_prints_fetch_skip_and_error_lines() {
+        let report = update::Report {
+            name: "repo".to_owned(),
+            steps: vec![
+                update::Step::Fetch {
+                    remote: "empty".to_owned(),
+                    outcome: update::FetchOutcome::NoRefspec,
+                },
+                update::Step::Fetch {
+                    remote: "origin".to_owned(),
+                    outcome: update::FetchOutcome::Error(vec!["fatal: boom".to_owned()]),
+                },
+                update::Step::Branch {
+                    name: "main".to_owned(),
+                    outcome: update::BranchOutcome::Error("error: failed".to_owned()),
+                },
+            ],
+        };
+        let mut out: Vec<u8> = Vec::new();
+        render_report(&report, false, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("empty has no fetch refspec. Skipped."),
+            "{text}"
+        );
+        assert!(text.contains("fatal: boom"), "{text}");
+        assert!(text.contains("main: error: failed"), "{text}");
     }
 
     #[test]

@@ -88,7 +88,7 @@ jobs:
             3. Potential bugs or edge cases
             4. Idiomatic Rust: borrowed arguments, io::Result with `?`, no unwrap or expect outside tests, no print macros,
                and std before new crates
-            5. Behaviour parity with the Parity Spec in .agents/planning.md, and a Deliberate Deviations row for every difference
+            5. Behaviour parity with the Feature Spec in .agents/planning.md, and a row in the Differences From gitup table for every difference
             6. Workflow and configuration correctness (GitHub Actions, TOML, YAML)
 
             Skip lock files.
