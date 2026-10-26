@@ -78,8 +78,8 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
    - An existing path that is not a directory prints an "isn't a repository" error. So does a directory when
      the depth is 0.
    - Any other directory is searched. The search follows symbolic links to directories and enters hidden
-     directories. It skips a directory it cannot read. A symbolic-link cycle with an unlimited depth does
-     not terminate, as in `gitup`.
+     directories. It skips a directory it cannot read, and a symbolic-link cycle ends that branch of the search
+     (`walkdir` reports the loop as an error entry).
    - Depth: the path itself is depth 0. A repository directly below the path is depth 1. Depth `d` finds
      repositories down to `d` levels below the path. The search does not descend into a repository it found.
    - A directory with no repositories below it, including an empty directory, prints its header with a count
@@ -182,6 +182,7 @@ during the search, and a failed bookmark write (which also exits 1).
 | The current branch's upstream comes from git's own `%(upstream)` value. | One source instead of a reconstruction. |
 | A `**` pattern in a bookmark path is recursive. | The `glob` crate's semantics. |
 | New references after a fetch are classified by the local reference name. | Clearer than the remote-side name. |
+| A symbolic-link cycle in the search ends that branch instead of looping. | `walkdir` detects the loop; `gitup` does not terminate on one. |
 | In a bare repository, the HEAD branch updates like any other. | `gitup` skips it as "not possible to fast-forward" and leaves it stale (probed against 0.5.2); `git branch -f` on a bare HEAD branch works, so the update is safe. |
 | A fetch does not recurse into submodules. | One less flag until a user needs it. |
 | `$VAR` never expands, in any path. | The expansion was a side effect, not a feature. |
@@ -227,19 +228,20 @@ otherwise.
 
 ### Dependencies
 
-Two crates, plus one for tests. The standard library covers the rest.
+Three crates, plus one for tests. The standard library covers the rest.
 
 | Crate | Use |
 | --- | --- |
 | `clap` (derive feature) | Parse the command line: a `Parser` struct with a `Subcommand` enum. |
 | `glob` | Expand the glob patterns that a bookmark path can contain, with `require_literal_leading_dot` set, as Python skipped dot entries. |
+| `walkdir` | The depth-limited directory search in `discover.rs`: sorted entries, symbolic links followed, loop detection. |
 | `tempfile` (development only) | Temporary directories in integration tests. |
 
 What the standard library covers here: the colour constants (a few string constants, written by hand), the
-error type (`io::Error` and `io::Result`), the depth-first directory walk (`read_dir`, sorted per directory),
-the lexical path normalisation (a short function over path parts), and the child process (`std::process::Command`).
+error type (`io::Error` and `io::Result`), the lexical path normalisation (a short function over path
+parts), and the child process (`std::process::Command`).
 
-Not added: a colour crate, an error-type crate, a directory-walk crate, a test-framework crate, a splitting
+Not added: a colour crate, an error-type crate, a test-framework crate, a splitting
 crate for the exec command (the shell already split it), `dirs` or `home` (the home directory comes from the
 `HOME` environment variable).
 
@@ -257,6 +259,7 @@ Checked on 25 Oct 2026. The README of each crate is the source.
 | Rust | 1.99.1, 13 Oct 2026 | Edition 2024. |
 | `clap` | 4.6.7 | - |
 | `glob` | 0.3.4 | `glob()` iterates lazily and returns `Paths`. A pattern with no wildcards matches literally. `symlink_metadata` does not follow a link, so a broken symbolic link still counts as existing, the way `lexists` did. `MatchOptions::require_literal_leading_dot` makes a pattern skip dot-directories, as Python did. |
+| `walkdir` | 2.5.0 | With `follow_links`, `DirEntry::file_type` returns the target's type, and a symbolic-link loop surfaces as an error entry rather than a descent. |
 | `tempfile` | 3.27.0 | `tempdir()` in integration tests. |
 
 These pins are a snapshot. Renovate updates them like any other dependency. A bump that changes a behaviour
