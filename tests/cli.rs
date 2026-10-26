@@ -919,6 +919,13 @@ fn exec_depth_limits_the_search() {
 fn default_bookmark_path_ignores_relative_and_empty_xdg_config_home() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().to_str().unwrap();
+    // `dirs` follows the platform: the XDG path on Linux, Application
+    // Support on macOS, where XDG_CONFIG_HOME plays no part at all.
+    #[cfg(target_os = "macos")]
+    let default_file = dir
+        .path()
+        .join("Library/Application Support/gitup/bookmarks");
+    #[cfg(not(target_os = "macos"))]
     let default_file = dir.path().join(".config/gitup/bookmarks");
     fs::create_dir_all(default_file.parent().unwrap()).unwrap();
     fs::write(&default_file, "/from-default\n").unwrap();

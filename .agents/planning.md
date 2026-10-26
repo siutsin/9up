@@ -147,7 +147,8 @@ default path sits under the platform config directory (the `dirs` crate): `$XDG_
 or `~/.config/gitup/bookmarks` when the variable is unset or empty. A relative value is ignored, as the XDG
 specification requires, so a `~/…` value is ignored rather than expanded. A non-UTF-8 absolute
 `XDG_CONFIG_HOME` is accepted. `-b ""` also uses the default path. When `dirs::config_dir()` returns no
-directory at all, `bookmark_path()` falls back to a relative `.config` path.
+directory at all, `bookmark_path()` falls back to a relative `.config` path. On macOS the platform directory is `~/Library/Application Support`,
+and `XDG_CONFIG_HOME` is not consulted.
 
 - Read: split on `\n`, trim each line, drop empty lines. A missing or unreadable file means no bookmarks.
 - Write: create the parent directory, join the entries with `\n`, with no final newline. Every write
