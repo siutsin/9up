@@ -71,11 +71,10 @@ fn git_text(dir: &Path, argv: &[&str]) -> Option<String> {
 }
 
 pub struct RepoInfo {
-    // Part of the rev-parse pair the plan prescribes.
+    // Part of the rev-parse pair the plan prescribes; only work_dir
+    // and bare are read.
     #[allow(dead_code)]
     pub git_dir: PathBuf,
-    // Read by exec_repo in Step 3.
-    #[allow(dead_code)]
     pub work_dir: PathBuf,
     pub bare: bool,
 }
@@ -441,6 +440,45 @@ fn parse_fetch_output(text: &str, remote: &str) -> Vec<(Kind, Vec<String>)> {
         }
     }
     groups
+}
+
+/// The result of running the exec command in one repository: its
+/// standard output and standard error as raw text, or the error line
+/// when the command could not start. main splits the text into lines.
+pub struct ExecReport {
+    pub name: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub error: Option<String>,
+}
+
+/// Run the command without a shell in the repository's working
+/// directory (the repository directory itself for a bare repository).
+/// The exit status is ignored.
+pub fn exec_repo(path: &Path, name: &str, command: &[String]) -> ExecReport {
+    let blank = |error: Option<String>| ExecReport {
+        name: name.to_owned(),
+        stdout: String::new(),
+        stderr: String::new(),
+        error,
+    };
+    let Some(info) = repo_info(path) else {
+        return blank(Some("Could not read the repository.".to_owned()));
+    };
+    match Command::new(&command[0])
+        .args(&command[1..])
+        .current_dir(&info.work_dir)
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(output) => ExecReport {
+            name: name.to_owned(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            error: None,
+        },
+        Err(err) => blank(Some(format!("Could not run {}: {err}", command[0]))),
+    }
 }
 
 #[cfg(test)]

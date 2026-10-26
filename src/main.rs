@@ -39,7 +39,7 @@ struct UpdateArgs {
     prune: bool,
 
     /// Search depth below each path. A negative value means no limit.
-    #[arg(short, long, default_value_t = 3, allow_negative_numbers = true)]
+    #[arg(short = 't', long, default_value_t = 3, allow_negative_numbers = true)]
     depth: i32,
 }
 
@@ -84,7 +84,7 @@ enum Command {
         paths: Vec<String>,
 
         /// Search depth below each path. A negative value means no limit.
-        #[arg(short, long, default_value_t = 3, allow_negative_numbers = true)]
+        #[arg(short = 't', long, default_value_t = 3, allow_negative_numbers = true)]
         depth: i32,
 
         /// The command and its arguments, after `--`.
@@ -179,7 +179,11 @@ fn run(cli: &Cli, out: &mut impl Write) -> io::Result<ExitCode> {
         Some(Command::Clean) => clean(&path, out),
         Some(Command::Update(args)) => update(args, &path, out),
         None => update(&UpdateArgs::default(), &path, out),
-        Some(Command::Exec { .. }) => todo!("exec arrives in step 3"),
+        Some(Command::Exec {
+            paths,
+            depth,
+            command,
+        }) => exec(paths, *depth, command, &path, out),
     }
 }
 
@@ -260,19 +264,7 @@ fn update(args: &UpdateArgs, bookmark_file: &Path, out: &mut impl Write) -> io::
     for input in &inputs {
         match discover::resolve(input, &cwd, args.depth) {
             discover::Resolved::Repos(repos) => {
-                let expanded = discover::expand_home(input);
-                let header = bookmarks::normalize(&expanded.display().to_string(), &cwd);
-                let count = repos.len();
-                let noun = if count == 1 {
-                    "repository"
-                } else {
-                    "repositories"
-                };
-                let _ = writeln!(
-                    out,
-                    "{} ({count} {noun})",
-                    paint(colour, BOLD_WHITE, &header)
-                );
+                print_header(out, colour, input, &cwd, repos.len());
                 let options = update::Options {
                     current_only: args.current_only,
                     fetch_only: args.fetch_only,
@@ -294,6 +286,21 @@ fn update(args: &UpdateArgs, bookmark_file: &Path, out: &mut impl Write) -> io::
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn print_header(out: &mut impl Write, colour: bool, input: &str, cwd: &Path, count: usize) {
+    let expanded = discover::expand_home(input);
+    let header = bookmarks::normalize(&expanded.display().to_string(), cwd);
+    let noun = if count == 1 {
+        "repository"
+    } else {
+        "repositories"
+    };
+    let _ = writeln!(
+        out,
+        "{} ({count} {noun})",
+        paint(colour, BOLD_WHITE, &header)
+    );
 }
 
 fn red_line(out: &mut impl Write, colour: bool, text: &str) {
@@ -406,6 +413,50 @@ fn bookmark_path(cli: &Cli) -> PathBuf {
 
 fn home_dir() -> PathBuf {
     env::home_dir().unwrap_or_default()
+}
+
+fn exec(
+    paths: &[String],
+    depth: i32,
+    command: &[String],
+    bookmark_file: &Path,
+    out: &mut impl Write,
+) -> io::Result<ExitCode> {
+    let cwd = env::current_dir()?;
+    let inputs: Vec<String> = if paths.is_empty() {
+        // No hint here: an exec run with no bookmarks prints nothing.
+        bookmarks::load(bookmark_file)
+    } else {
+        paths.to_vec()
+    };
+    let colour = io::stdout().is_terminal();
+    for input in &inputs {
+        match discover::resolve(input, &cwd, depth) {
+            discover::Resolved::Repos(repos) => {
+                print_header(out, colour, input, &cwd, repos.len());
+                for repo in &repos {
+                    let report = update::exec_repo(&repo.path, &repo.name, command);
+                    let _ = writeln!(out, "  {}", paint(colour, BOLD_GREEN, &report.name));
+                    if let Some(error) = &report.error {
+                        red_line(out, colour, error);
+                    } else {
+                        for line in report.stdout.lines().chain(report.stderr.lines()) {
+                            let _ = writeln!(out, "    {line}");
+                        }
+                    }
+                }
+            }
+            discover::Resolved::Comment(text) => {
+                if !text.is_empty() {
+                    let _ = writeln!(out, "{text}");
+                }
+            }
+            discover::Resolved::PathError(message) => {
+                let _ = writeln!(out, "{}", paint(colour, RED, &message));
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]
