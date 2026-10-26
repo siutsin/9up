@@ -13,9 +13,12 @@ Coverage is not a gate: `cargo llvm-cov --locked` reports it (the tool is pinned
    not the spec. The CLI details and the output wording are 9up's own. A difference from `gitup` that is not
    in the plan's Differences table needs a row there first.
 2. `update_repo` and `exec_repo` return data. Only `main.rs` writes output.
-3. Start every git child process through `run(dir, argv)`. `exec_repo`'s spawn of the user's command is
-   the one exception: it keeps the same discipline (no shell, null stdin, explicit directory).
-4. No traits, error enums or extra modules without a reason in the plan.
+3. Start every git child process through the `Sys` seam (`RealSys::git` in `sys.rs`). The user's command
+   in `exec_repo` goes through `Sys::exec`: the same discipline (no shell, null stdin, explicit directory).
+4. Everything is built in `main` and passed down in the `App` context: no environment reads, `dirs` calls
+   or service construction below `main`. The `Sys` trait is the standing exception to the no-traits rule,
+   for the owner's composition-root architecture (plan, Module Breakdown). No other traits, error enums or
+   extra modules without a reason in the plan.
 5. Write idiomatic Rust: the current edition and syntax, the Rust API Guidelines, std first.
 6. Use the GitHub pull request workflow. Work on a branch, never on `master`. Run the local checks before
    every push. Merge only when CI is green. Ask before pushing.

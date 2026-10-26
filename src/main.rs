@@ -1,6 +1,9 @@
 mod bookmarks;
 mod discover;
+mod sys;
 mod update;
+
+use sys::{App, RealSys};
 
 use std::env;
 use std::ffi::OsString;
@@ -161,7 +164,26 @@ fn main() -> ExitCode {
     let mut out = stdout.lock();
     let _ = writeln!(out, "9up");
     let _ = writeln!(out);
-    match run(&cli, &mut out) {
+    // The composition root: every service and resolved value is built
+    // here and passed down in the context.
+    let cwd = match env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(err) => {
+            eprintln!("9up: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let config_dir = dirs::config_dir();
+    let bookmark_file = bookmark_path(&cli, config_dir.as_deref());
+    let mut app = App {
+        sys: Box::new(RealSys),
+        cwd,
+        home: dirs::home_dir(),
+        bookmark_file,
+        colour: io::stdout().is_terminal(),
+        out: &mut out,
+    };
+    match run(&mut app, &cli) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("9up: {err}");
@@ -170,28 +192,27 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: &Cli, out: &mut impl Write) -> io::Result<ExitCode> {
-    let path = bookmark_path(cli);
+fn run(app: &mut App, cli: &Cli) -> io::Result<ExitCode> {
     match &cli.command {
-        Some(Command::Add { paths }) => add(&path, paths, out),
-        Some(Command::Delete { paths }) => delete(&path, paths, out),
-        Some(Command::List) => list(&path, out),
-        Some(Command::Clean) => clean(&path, out),
-        Some(Command::Update(args)) => update(args, &path, out),
-        None => update(&UpdateArgs::default(), &path, out),
+        Some(Command::Add { paths }) => add(app, paths),
+        Some(Command::Delete { paths }) => delete(app, paths),
+        Some(Command::List) => list(app),
+        Some(Command::Clean) => clean(app),
+        Some(Command::Update(args)) => update(app, args),
+        None => update(app, &UpdateArgs::default()),
         Some(Command::Exec {
             paths,
             depth,
             command,
-        }) => exec(paths, *depth, command, &path, out),
+        }) => exec(app, paths, *depth, command),
     }
 }
 
-fn add(path: &Path, paths: &[String], out: &mut impl Write) -> io::Result<ExitCode> {
-    let cwd = env::current_dir()?;
-    let mut entries = bookmarks::load(path);
+fn add(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
+    let out = &mut *app.out;
+    let mut entries = bookmarks::load(&*app.sys, &app.bookmark_file);
     for raw in paths {
-        let normalized = bookmarks::normalize(raw, &cwd);
+        let normalized = bookmarks::normalize(raw, &app.cwd);
         if bookmarks::has(&entries, &normalized) {
             let _ = writeln!(out, "{normalized} is already bookmarked.");
         } else {
@@ -199,16 +220,16 @@ fn add(path: &Path, paths: &[String], out: &mut impl Write) -> io::Result<ExitCo
             entries.push(normalized);
         }
     }
-    bookmarks::save(path, &entries)?;
+    bookmarks::save(&*app.sys, &app.bookmark_file, &entries)?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn delete(path: &Path, paths: &[String], out: &mut impl Write) -> io::Result<ExitCode> {
-    let cwd = env::current_dir()?;
-    let mut entries = bookmarks::load(path);
+fn delete(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
+    let out = &mut *app.out;
+    let mut entries = bookmarks::load(&*app.sys, &app.bookmark_file);
     let mut changed = false;
     for raw in paths {
-        let normalized = bookmarks::normalize(raw, &cwd);
+        let normalized = bookmarks::normalize(raw, &app.cwd);
         if let Some(index) = entries.iter().position(|entry| entry == &normalized) {
             entries.remove(index);
             changed = true;
@@ -218,13 +239,14 @@ fn delete(path: &Path, paths: &[String], out: &mut impl Write) -> io::Result<Exi
         }
     }
     if changed {
-        bookmarks::save(path, &entries)?;
+        bookmarks::save(&*app.sys, &app.bookmark_file, &entries)?;
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn list(path: &Path, out: &mut impl Write) -> io::Result<ExitCode> {
-    let entries = bookmarks::load(path);
+fn list(app: &mut App) -> io::Result<ExitCode> {
+    let out = &mut *app.out;
+    let entries = bookmarks::load(&*app.sys, &app.bookmark_file);
     if entries.is_empty() {
         let _ = writeln!(out, "No bookmarks.");
     }
@@ -248,10 +270,10 @@ fn paint(enabled: bool, code: &str, text: &str) -> String {
     }
 }
 
-fn update(args: &UpdateArgs, bookmark_file: &Path, out: &mut impl Write) -> io::Result<ExitCode> {
-    let cwd = env::current_dir()?;
+fn update(app: &mut App, args: &UpdateArgs) -> io::Result<ExitCode> {
+    let out = &mut *app.out;
     let inputs: Vec<String> = if args.paths.is_empty() {
-        let entries = bookmarks::load(bookmark_file);
+        let entries = bookmarks::load(&*app.sys, &app.bookmark_file);
         if entries.is_empty() {
             let _ = writeln!(out, "No bookmarks. Add one with `9up add <path>`.");
             return Ok(ExitCode::SUCCESS);
@@ -260,18 +282,25 @@ fn update(args: &UpdateArgs, bookmark_file: &Path, out: &mut impl Write) -> io::
     } else {
         args.paths.clone()
     };
-    let colour = io::stdout().is_terminal();
+    let colour = app.colour;
     for input in &inputs {
-        match discover::resolve(input, &cwd, args.depth) {
+        match discover::resolve(input, &app.cwd, app.home.as_deref(), args.depth) {
             discover::Resolved::Repos(repos) => {
-                print_header(out, colour, input, &cwd, repos.len());
+                print_header(
+                    out,
+                    colour,
+                    input,
+                    app.home.as_deref(),
+                    &app.cwd,
+                    repos.len(),
+                );
                 let options = update::Options {
                     current_only: args.current_only,
                     fetch_only: args.fetch_only,
                     prune: args.prune,
                 };
                 for repo in &repos {
-                    let report = update::update_repo(&repo.path, &repo.name, &options);
+                    let report = update::update_repo(&*app.sys, &repo.path, &repo.name, &options);
                     render_report(&report, colour, out);
                 }
             }
@@ -288,8 +317,15 @@ fn update(args: &UpdateArgs, bookmark_file: &Path, out: &mut impl Write) -> io::
     Ok(ExitCode::SUCCESS)
 }
 
-fn print_header(out: &mut impl Write, colour: bool, input: &str, cwd: &Path, count: usize) {
-    let expanded = discover::expand_home(input);
+fn print_header(
+    out: &mut dyn Write,
+    colour: bool,
+    input: &str,
+    home: Option<&Path>,
+    cwd: &Path,
+    count: usize,
+) {
+    let expanded = discover::expand_home(input, home);
     let header = bookmarks::normalize(&expanded.display().to_string(), cwd);
     let noun = if count == 1 {
         "repository"
@@ -303,11 +339,11 @@ fn print_header(out: &mut impl Write, colour: bool, input: &str, cwd: &Path, cou
     );
 }
 
-fn red_line(out: &mut impl Write, colour: bool, text: &str) {
+fn red_line(out: &mut dyn Write, colour: bool, text: &str) {
     let _ = writeln!(out, "    {}", paint(colour, RED, text));
 }
 
-fn render_report(report: &update::Report, colour: bool, out: &mut impl Write) {
+fn render_report(report: &update::Report, colour: bool, out: &mut dyn Write) {
     let _ = writeln!(out, "  {}", paint(colour, BOLD_GREEN, &report.name));
     for step in &report.steps {
         match step {
@@ -370,8 +406,9 @@ fn render_report(report: &update::Report, colour: bool, out: &mut impl Write) {
     }
 }
 
-fn clean(path: &Path, out: &mut impl Write) -> io::Result<ExitCode> {
-    let entries = bookmarks::load(path);
+fn clean(app: &mut App) -> io::Result<ExitCode> {
+    let out = &mut *app.out;
+    let entries = bookmarks::load(&*app.sys, &app.bookmark_file);
     if entries.is_empty() {
         let _ = writeln!(out, "No bookmarks.");
         return Ok(ExitCode::SUCCESS);
@@ -379,7 +416,7 @@ fn clean(path: &Path, out: &mut impl Write) -> io::Result<ExitCode> {
     let mut kept = Vec::new();
     let mut removed = false;
     for entry in &entries {
-        let expanded = discover::expand_home(entry);
+        let expanded = discover::expand_home(entry, app.home.as_deref());
         let live =
             expanded.is_dir() || !discover::glob_paths(&expanded.display().to_string()).is_empty();
         if live {
@@ -390,7 +427,7 @@ fn clean(path: &Path, out: &mut impl Write) -> io::Result<ExitCode> {
         }
     }
     if removed {
-        bookmarks::save(path, &kept)?;
+        bookmarks::save(&*app.sys, &app.bookmark_file, &kept)?;
     } else {
         let _ = writeln!(out, "Nothing to clean.");
     }
@@ -399,37 +436,41 @@ fn clean(path: &Path, out: &mut impl Write) -> io::Result<ExitCode> {
 
 /// The bookmark file for this run: the `-b` value, or the default path
 /// under the XDG config directory.
-fn bookmark_path(cli: &Cli) -> PathBuf {
+fn bookmark_path(cli: &Cli, config_dir: Option<&Path>) -> PathBuf {
     if let Some(path) = cli.bookmark_file.as_deref().filter(|path| !path.is_empty()) {
         return PathBuf::from(path);
     }
-    // dirs applies the platform rules: on Linux a relative
-    // XDG_CONFIG_HOME is ignored, as the specification requires.
-    let config = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config"));
+    // The config directory comes from `dirs` (see main): on Linux a
+    // relative XDG_CONFIG_HOME is ignored, as the specification
+    // requires. No config directory at all falls back to `.config`.
+    let config = config_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".config"));
     config.join("gitup").join("bookmarks")
 }
 
-fn exec(
-    paths: &[String],
-    depth: i32,
-    command: &[String],
-    bookmark_file: &Path,
-    out: &mut impl Write,
-) -> io::Result<ExitCode> {
-    let cwd = env::current_dir()?;
+fn exec(app: &mut App, paths: &[String], depth: i32, command: &[String]) -> io::Result<ExitCode> {
+    let out = &mut *app.out;
     let inputs: Vec<String> = if paths.is_empty() {
         // No hint here: an exec run with no bookmarks prints nothing.
-        bookmarks::load(bookmark_file)
+        bookmarks::load(&*app.sys, &app.bookmark_file)
     } else {
         paths.to_vec()
     };
-    let colour = io::stdout().is_terminal();
+    let colour = app.colour;
     for input in &inputs {
-        match discover::resolve(input, &cwd, depth) {
+        match discover::resolve(input, &app.cwd, app.home.as_deref(), depth) {
             discover::Resolved::Repos(repos) => {
-                print_header(out, colour, input, &cwd, repos.len());
+                print_header(
+                    out,
+                    colour,
+                    input,
+                    app.home.as_deref(),
+                    &app.cwd,
+                    repos.len(),
+                );
                 for repo in &repos {
-                    let report = update::exec_repo(&repo.path, &repo.name, command);
+                    let report = update::exec_repo(&*app.sys, &repo.path, &repo.name, command);
                     let _ = writeln!(out, "  {}", paint(colour, BOLD_GREEN, &report.name));
                     if let Some(error) = &report.error {
                         red_line(out, colour, error);

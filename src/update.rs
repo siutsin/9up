@@ -1,6 +1,6 @@
-use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+
+use crate::sys::Sys;
 
 /// A Report carries data only, so milestone 2 can collect reports from
 /// many threads and main can render them in path order.
@@ -49,21 +49,8 @@ pub struct Options {
     pub prune: bool,
 }
 
-/// The one child-process choke point. Every git call goes through here:
-/// the working directory is set, the locale is pinned to English (the
-/// branch logic reads git's words), and standard input is null.
-pub fn run(dir: &Path, argv: &[&str]) -> io::Result<Output> {
-    Command::new("git")
-        .args(argv)
-        .current_dir(dir)
-        .env("LC_ALL", "C")
-        .env("LANGUAGE", "C")
-        .stdin(Stdio::null())
-        .output()
-}
-
-fn git_text(dir: &Path, argv: &[&str]) -> Option<String> {
-    let output = run(dir, argv).ok()?;
+fn git_text(sys: &dyn Sys, dir: &Path, argv: &[&str]) -> Option<String> {
+    let output = sys.git(dir, argv).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -81,9 +68,9 @@ pub struct RepoInfo {
 
 /// Let git answer where the repository lives. A bare repository has no
 /// top level, so its working directory is the git directory.
-pub fn repo_info(path: &Path) -> Option<RepoInfo> {
-    let git_dir = PathBuf::from(git_text(path, &["rev-parse", "--absolute-git-dir"])?);
-    let top = git_text(path, &["rev-parse", "--show-toplevel"]);
+pub fn repo_info(sys: &dyn Sys, path: &Path) -> Option<RepoInfo> {
+    let git_dir = PathBuf::from(git_text(sys, path, &["rev-parse", "--absolute-git-dir"])?);
+    let top = git_text(sys, path, &["rev-parse", "--show-toplevel"]);
     let bare = top.is_none();
     let work_dir = top.map(PathBuf::from).unwrap_or_else(|| git_dir.clone());
     Some(RepoInfo {
@@ -100,8 +87,8 @@ struct Remote {
 
 /// The remotes in configuration order, with their fetch refspecs, from
 /// one `git config` call.
-fn remotes(path: &Path) -> Vec<Remote> {
-    let Some(text) = git_text(path, &["config", "--get-regexp", "^remote\\."]) else {
+fn remotes(sys: &dyn Sys, path: &Path) -> Vec<Remote> {
+    let Some(text) = git_text(sys, path, &["config", "--get-regexp", "^remote\\."]) else {
         return Vec::new();
     };
     parse_remotes(&text)
@@ -139,20 +126,22 @@ fn parse_remotes(text: &str) -> Vec<Remote> {
 /// The current branch's full name without the `refs/heads/` prefix.
 /// None means a detached HEAD. Never `--short`: a tag with the same
 /// name would change the answer.
-fn current_branch(path: &Path) -> Option<String> {
-    let full = git_text(path, &["symbolic-ref", "-q", "HEAD"])?;
+fn current_branch(sys: &dyn Sys, path: &Path) -> Option<String> {
+    let full = git_text(sys, path, &["symbolic-ref", "-q", "HEAD"])?;
     full.strip_prefix("refs/heads/").map(str::to_owned)
 }
 
 /// The remote the branch tracks, from its configuration. Both the
 /// remote and the merge ref must be set. Configuration works on an
 /// unborn branch, where no refs exist yet.
-fn tracked_remote(path: &Path, branch: &str) -> Option<String> {
+fn tracked_remote(sys: &dyn Sys, path: &Path, branch: &str) -> Option<String> {
     let remote = git_text(
+        sys,
         path,
         &["config", "--get", &format!("branch.{branch}.remote")],
     )?;
     git_text(
+        sys,
         path,
         &["config", "--get", &format!("branch.{branch}.merge")],
     )?;
@@ -167,17 +156,17 @@ fn failed(name: &str, message: &str) -> Report {
     }
 }
 
-pub fn update_repo(path: &Path, name: &str, options: &Options) -> Report {
+pub fn update_repo(sys: &dyn Sys, path: &Path, name: &str, options: &Options) -> Report {
     let mut report = Report {
         name: name.to_owned(),
         steps: Vec::new(),
     };
-    let all_remotes = remotes(path);
+    let all_remotes = remotes(sys, path);
     let picked: Vec<&Remote> = if options.current_only {
-        let Some(branch) = current_branch(path) else {
+        let Some(branch) = current_branch(sys, path) else {
             return failed(name, "HEAD is detached, so no remote is tracked.");
         };
-        let Some(remote_name) = tracked_remote(path, &branch) else {
+        let Some(remote_name) = tracked_remote(sys, path, &branch) else {
             return failed(name, "The current branch tracks no remote.");
         };
         match all_remotes.iter().find(|remote| remote.name == remote_name) {
@@ -210,7 +199,7 @@ pub fn update_repo(path: &Path, name: &str, options: &Options) -> Report {
             });
             continue;
         }
-        let outcome = fetch(path, &remote.name, options.prune);
+        let outcome = fetch(sys, path, &remote.name, options.prune);
         let failed = matches!(outcome, FetchOutcome::Error(_));
         report.steps.push(Step::Fetch {
             remote: remote.name.clone(),
@@ -221,8 +210,14 @@ pub fn update_repo(path: &Path, name: &str, options: &Options) -> Report {
         }
     }
     if !options.fetch_only {
-        let bare = repo_info(path).map(|info| info.bare).unwrap_or(false);
-        branch_step(path, &current_branch(path), bare, &mut report.steps);
+        let bare = repo_info(sys, path).map(|info| info.bare).unwrap_or(false);
+        branch_step(
+            sys,
+            path,
+            &current_branch(sys, path),
+            bare,
+            &mut report.steps,
+        );
     }
     report
 }
@@ -235,8 +230,15 @@ struct Branch {
     upstream: String,
 }
 
-fn branch_step(path: &Path, current: &Option<String>, bare: bool, steps: &mut Vec<Step>) {
+fn branch_step(
+    sys: &dyn Sys,
+    path: &Path,
+    current: &Option<String>,
+    bare: bool,
+    steps: &mut Vec<Step>,
+) {
     let Some(text) = git_text(
+        sys,
         path,
         &[
             "for-each-ref",
@@ -276,7 +278,7 @@ fn branch_step(path: &Path, current: &Option<String>, bare: bool, steps: &mut Ve
         else {
             continue; // The upstream reference is missing locally.
         };
-        let Some(base) = git_text(path, &["merge-base", &branch.sha, &upstream_sha]) else {
+        let Some(base) = git_text(sys, path, &["merge-base", &branch.sha, &upstream_sha]) else {
             continue; // No merge base: skipped silently.
         };
         let name = branch.name.clone();
@@ -292,7 +294,7 @@ fn branch_step(path: &Path, current: &Option<String>, bare: bool, steps: &mut Ve
                 outcome: BranchOutcome::Skipped("a fast-forward is not possible".to_owned()),
             });
         } else if !bare && current.as_deref() == Some(name.as_str()) {
-            match run(path, &["merge", "--ff-only", &upstream_ref]) {
+            match sys.git(path, &["merge", "--ff-only", &upstream_ref]) {
                 Ok(output) if output.status.success() => {
                     push_updated(steps, &branches, &mut shas, index, &upstream_sha);
                 }
@@ -316,7 +318,7 @@ fn branch_step(path: &Path, current: &Option<String>, bare: bool, steps: &mut Ve
                 }),
             }
         } else {
-            match run(path, &["branch", "-f", "--", &name, &upstream_ref]) {
+            match sys.git(path, &["branch", "-f", "--", &name, &upstream_ref]) {
                 Ok(output) if output.status.success() => {
                     push_updated(steps, &branches, &mut shas, index, &upstream_sha);
                 }
@@ -366,14 +368,14 @@ fn push_updated(
     });
 }
 
-fn fetch(path: &Path, remote: &str, prune: bool) -> FetchOutcome {
+fn fetch(sys: &dyn Sys, path: &Path, remote: &str, prune: bool) -> FetchOutcome {
     let mut argv = vec!["fetch", "--porcelain"];
     if prune {
         argv.push("--prune");
     }
     argv.push("--");
     argv.push(remote);
-    let output = match run(path, &argv) {
+    let output = match sys.git(path, &argv) {
         Ok(output) => output,
         Err(err) => return FetchOutcome::Error(vec![format!("Could not run git: {err}")]),
     };
@@ -455,22 +457,17 @@ pub struct ExecReport {
 /// Run the command without a shell in the repository's working
 /// directory (the repository directory itself for a bare repository).
 /// The exit status is ignored.
-pub fn exec_repo(path: &Path, name: &str, command: &[String]) -> ExecReport {
+pub fn exec_repo(sys: &dyn Sys, path: &Path, name: &str, command: &[String]) -> ExecReport {
     let blank = |error: Option<String>| ExecReport {
         name: name.to_owned(),
         stdout: String::new(),
         stderr: String::new(),
         error,
     };
-    let Some(info) = repo_info(path) else {
+    let Some(info) = repo_info(sys, path) else {
         return blank(Some("Could not read the repository.".to_owned()));
     };
-    match Command::new(&command[0])
-        .args(&command[1..])
-        .current_dir(&info.work_dir)
-        .stdin(Stdio::null())
-        .output()
-    {
+    match sys.exec(&info.work_dir, command) {
         Ok(output) => ExecReport {
             name: name.to_owned(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -484,6 +481,110 @@ pub fn exec_repo(path: &Path, name: &str, command: &[String]) -> ExecReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sys::Sys;
+    use std::io;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    fn output(raw_status: i32, stdout: &str, stderr: &str) -> Output {
+        Output {
+            status: ExitStatus::from_raw(raw_status),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    /// A system whose git answers just enough for the fetch and exec
+    /// flows, with the fetch scripted per test.
+    struct StubSys {
+        fetch: FetchStub,
+    }
+
+    enum FetchStub {
+        CannotStart,
+        Fails,
+    }
+
+    impl Sys for StubSys {
+        fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+            match argv {
+                ["config", "--get-regexp", ..] => Ok(output(
+                    0,
+                    "remote.origin.url /srv/git.git\nremote.origin.fetch +refs/heads/*:refs/remotes/origin/*\n",
+                    "",
+                )),
+                ["rev-parse", "--absolute-git-dir"] => Ok(output(0, "/repo/.git\n", "")),
+                ["rev-parse", "--show-toplevel"] => Ok(output(0, "/repo\n", "")),
+                ["fetch", ..] => match self.fetch {
+                    FetchStub::CannotStart => {
+                        Err(io::Error::new(io::ErrorKind::NotFound, "no git here"))
+                    }
+                    FetchStub::Fails => Ok(output(256, "", "fatal: boom\n")),
+                },
+                _ => Ok(output(0, "", "")),
+            }
+        }
+
+        fn exec(&self, _dir: &Path, _argv: &[String]) -> io::Result<Output> {
+            Err(io::Error::new(io::ErrorKind::NotFound, "no such file"))
+        }
+    }
+
+    #[test]
+    fn a_fetch_that_cannot_start_is_an_error_step() {
+        let sys = StubSys {
+            fetch: FetchStub::CannotStart,
+        };
+        let options = Options {
+            current_only: false,
+            fetch_only: true,
+            prune: false,
+        };
+        let report = update_repo(&sys, Path::new("/repo"), "repo", &options);
+        match &report.steps[..] {
+            [
+                Step::Fetch {
+                    outcome: FetchOutcome::Error(lines),
+                    ..
+                },
+            ] => assert!(lines[0].contains("Could not run git"), "{lines:?}"),
+            steps => panic!("unexpected steps: {}", steps.len()),
+        }
+    }
+
+    #[test]
+    fn a_failed_fetch_reports_gits_error_lines() {
+        let sys = StubSys {
+            fetch: FetchStub::Fails,
+        };
+        let options = Options {
+            current_only: false,
+            fetch_only: true,
+            prune: false,
+        };
+        let report = update_repo(&sys, Path::new("/repo"), "repo", &options);
+        match &report.steps[..] {
+            [
+                Step::Fetch {
+                    outcome: FetchOutcome::Error(lines),
+                    ..
+                },
+            ] => assert_eq!(lines, &["fatal: boom"]),
+            steps => panic!("unexpected steps: {}", steps.len()),
+        }
+    }
+
+    #[test]
+    fn a_command_that_cannot_start_is_an_error_report() {
+        let sys = StubSys {
+            fetch: FetchStub::Fails,
+        };
+        let report = exec_repo(&sys, Path::new("/repo"), "repo", &["frobnicate".to_owned()]);
+        assert_eq!(
+            report.error.as_deref(),
+            Some("Could not run frobnicate: no such file")
+        );
+    }
 
     #[test]
     fn parse_remotes_keeps_order_and_refspecs() {
