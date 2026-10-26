@@ -4,7 +4,9 @@ Update many git repositories at once.
 
 ## Install
 
-Not yet. `Cargo.toml` arrives in Step 1.
+```sh
+cargo install --path .
+```
 
 ## Development
 
