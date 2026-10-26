@@ -80,15 +80,8 @@ fn sync_array(array: &mut Array, entries: &[String]) {
     // value's line, and a comment there would comment it out. A
     // multiline array gets the break back.
     let trailing = array.trailing().as_str().unwrap_or_default();
-    let multiline = trailing.contains('\n')
-        || array.iter().any(|value| {
-            value
-                .decor()
-                .prefix()
-                .and_then(|raw| raw.as_str())
-                .unwrap_or_default()
-                .contains('\n')
-        });
+    let multiline =
+        trailing.contains('\n') || array.iter().any(|value| prefix_of(value).contains('\n'));
     if !trailing.ends_with('\n') && (trailing.contains('#') || multiline) {
         array.set_trailing(format!("{trailing}\n"));
     }
@@ -137,19 +130,7 @@ fn sync_array(array: &mut Array, entries: &[String]) {
 fn rescue_comments(array: &mut Array, index: usize) {
     let (prefix, suffix) = array
         .get(index)
-        .map(|value| {
-            let decor = value.decor();
-            (
-                decor
-                    .prefix()
-                    .and_then(|raw| raw.as_str())
-                    .unwrap_or_default(),
-                decor
-                    .suffix()
-                    .and_then(|raw| raw.as_str())
-                    .unwrap_or_default(),
-            )
-        })
+        .map(|value| (prefix_of(value), suffix_of(value)))
         .unwrap_or_default();
     let head = comment_head(prefix);
     let mut notes = suffix_comments(suffix).into_iter();
@@ -162,13 +143,10 @@ fn rescue_comments(array: &mut Array, index: usize) {
         if index > 0
             && let Some(previous) = array.get_mut(index - 1)
         {
-            let decor = previous.decor_mut();
-            let old = decor
-                .suffix()
-                .and_then(|raw| raw.as_str())
-                .unwrap_or_default();
+            let old = suffix_of(previous);
             if !old.contains('#') {
-                decor.set_suffix(format!("{old}{first}"));
+                let old = old.to_owned();
+                previous.decor_mut().set_suffix(format!("{old}{first}"));
                 moved_back = true;
             }
         }
@@ -198,6 +176,24 @@ fn suffix_comments(suffix: &str) -> Vec<String> {
         .collect()
 }
 
+/// The raw text a value's decor holds before it.
+fn prefix_of(value: &Value) -> &str {
+    value
+        .decor()
+        .prefix()
+        .and_then(|raw| raw.as_str())
+        .unwrap_or_default()
+}
+
+/// The raw text a value's decor holds after it.
+fn suffix_of(value: &Value) -> &str {
+    value
+        .decor()
+        .suffix()
+        .and_then(|raw| raw.as_str())
+        .unwrap_or_default()
+}
+
 /// The part of a raw prefix before its final line break, when it
 /// holds a comment. The break and the indentation after it belong
 /// to the value the prefix precedes.
@@ -222,12 +218,8 @@ fn line_comment(text: &str) -> Option<String> {
 /// array's trailing text when the removed value was last.
 fn move_forward(array: &mut Array, index: usize, text: &str) {
     if let Some(next) = array.get_mut(index + 1) {
-        let decor = next.decor_mut();
-        let old = decor
-            .prefix()
-            .and_then(|raw| raw.as_str())
-            .unwrap_or_default();
-        decor.set_prefix(join(text, old));
+        let old = prefix_of(next).to_owned();
+        next.decor_mut().set_prefix(join(text, &old));
     } else {
         let trailing = array.trailing().as_str().unwrap_or_default();
         array.set_trailing(join(text, trailing));
@@ -260,11 +252,7 @@ fn append_prefix(array: &Array) -> String {
     let Some(last) = array.iter().last() else {
         return "\n    ".to_owned();
     };
-    let prefix = last
-        .decor()
-        .prefix()
-        .and_then(|raw| raw.as_str())
-        .unwrap_or_default();
+    let prefix = prefix_of(last);
     match prefix.rfind('\n') {
         Some(index) => prefix[index..].to_owned(),
         None => " ".to_owned(),
@@ -321,10 +309,6 @@ fn not_strings(path: &Path) -> io::Error {
             path.display()
         ),
     )
-}
-
-pub fn has(entries: &[String], normalized: &str) -> bool {
-    entries.iter().any(|entry| entry == normalized)
 }
 
 /// The stored form of a path: absolute, normalised with no filesystem
@@ -608,6 +592,41 @@ mod tests {
             assert!(text.contains("# only note"), "{text}");
             assert_eq!(load(&RealSys, &file).unwrap(), ["/a"]);
         }
+    }
+
+    #[test]
+    fn save_adds_the_trailing_newline_an_existing_file_lacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        fs::write(&file, "repositories = [\"/a\"]\nother = 1").unwrap();
+        save(&RealSys, &file, &["/a".to_owned()]).unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(text.ends_with('\n'), "{text}");
+        assert!(text.contains("other = 1"), "{text}");
+        assert_eq!(load(&RealSys, &file).unwrap(), ["/a"]);
+        // A file ending in a bare comment renders without a newline;
+        // the guard in save adds it.
+        fs::write(&file, "repositories = [\"/a\"]\n# end comment").unwrap();
+        save(&RealSys, &file, &["/a".to_owned()]).unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(text.ends_with('\n'), "{text}");
+        assert!(text.contains("# end comment"), "{text}");
+    }
+
+    #[test]
+    fn save_keeps_a_stacked_trailing_comment_on_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        fs::write(
+            &file,
+            "repositories = [\n    \"/a\", # note one\n    # note two\n]\n",
+        )
+        .unwrap();
+        save(&RealSys, &file, &["/a".to_owned(), "/b".to_owned()]).unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(text.contains("# note one"), "{text}");
+        assert!(text.contains("# note two"), "{text}");
+        assert_eq!(load(&RealSys, &file).unwrap(), ["/a", "/b"]);
     }
 
     #[test]

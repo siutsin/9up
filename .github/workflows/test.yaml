@@ -62,5 +62,5 @@ jobs:
         with:
           cache: false
 
-      - name: Measure the coverage
-        run: cargo llvm-cov --locked
+      - name: Check the coverage
+        run: mise run coverage

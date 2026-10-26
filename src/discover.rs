@@ -253,6 +253,10 @@ mod tests {
             PathBuf::from("/home/a/x")
         );
         assert_eq!(expand_home("~/x", None), PathBuf::from("~/x"));
+        assert_eq!(
+            expand_home("~", Some(Path::new("/home/a"))),
+            PathBuf::from("/home/a")
+        );
     }
 
     #[test]
@@ -343,6 +347,47 @@ mod tests {
             Resolved::PathError(message) => assert!(message.contains("isn't a repository")),
             _ => panic!("not an error"),
         }
+        match resolve("", dir.path(), None, 3) {
+            Resolved::PathError(_) => {}
+            _ => panic!("not an error"),
+        }
+        match resolve("/nonexistent-9up-test-*", dir.path(), None, 3) {
+            Resolved::PathError(_) => {}
+            _ => panic!("not an error"),
+        }
+        match resolve("[", dir.path(), None, 3) {
+            Resolved::PathError(_) => {}
+            _ => panic!("not an error"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_symbolic_link_has_no_repositories() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(dir.path().join("missing"), &link).unwrap();
+        match resolve(link.to_str().unwrap(), dir.path(), None, 3) {
+            Resolved::Repos(repos) => assert!(repos.is_empty()),
+            _ => panic!("not repos"),
+        }
+    }
+
+    #[test]
+    fn search_skips_files_and_git_directories_and_names_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        fake_repo(&repo);
+        fs::write(dir.path().join("stray"), "x").unwrap();
+        let inner = dir.path().join(".git").join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        fake_repo(&inner);
+        let resolved = resolve(dir.path().to_str().unwrap(), dir.path(), None, 3);
+        assert_eq!(resolved_names(&resolved), ["repo"]);
+        let found = search(&repo, 3, &repo);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "repo");
     }
 
     #[test]

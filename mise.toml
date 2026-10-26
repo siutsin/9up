@@ -3,3 +3,7 @@ node = "24.22.1"
 "npm:markdownlint-cli2" = "0.24.0"
 "aqua:zizmorcore/zizmor" = "1.31.1"
 "aqua:taiki-e/cargo-llvm-cov" = "0.9.1"
+
+# The coverage gate, run by CI and by hand: fails below 90% of lines.
+[tasks.coverage]
+run = "cargo llvm-cov --locked --fail-under-lines 90"
