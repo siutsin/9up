@@ -141,8 +141,9 @@ gets colour codes.
 ### Bookmark File
 
 The bookmark file format is `gitup`'s, so an existing file carries over unchanged. One bookmark per line. The
-default path is `$XDG_CONFIG_HOME/gitup/bookmarks`, or `~/.config/gitup/bookmarks` when the variable is unset
-or empty. The variable is `~` expanded. `-b ""` also uses the default path.
+default path sits under the platform config directory (the `dirs` crate): `$XDG_CONFIG_HOME/gitup/bookmarks`,
+or `~/.config/gitup/bookmarks` when the variable is unset or empty. A relative value is ignored, as the XDG
+specification requires, so a `~/…` value is ignored rather than expanded. `-b ""` also uses the default path.
 
 - Read: split on `\n`, trim each line, drop empty lines. A missing or unreadable file means no bookmarks.
 - Write: create the parent directory, join the entries with `\n`, with no final newline. Every write
@@ -228,13 +229,14 @@ otherwise.
 
 ### Dependencies
 
-Three crates, plus one for tests. The standard library covers the rest.
+Four crates, plus one for tests. The standard library covers the rest.
 
 | Crate | Use |
 | --- | --- |
 | `clap` (derive feature) | Parse the command line: a `Parser` struct with a `Subcommand` enum. |
 | `glob` | Expand the glob patterns that a bookmark path can contain, with `require_literal_leading_dot` set, as Python skipped dot entries. |
 | `walkdir` | The depth-limited directory search in `discover.rs`: sorted entries, symbolic links followed, loop detection. |
+| `dirs` | The platform config and home directories: the XDG rules for the default bookmark path, and the home lookup behind `~` expansion. |
 | `tempfile` (development only) | Temporary directories in integration tests. |
 
 What the standard library covers here: the colour constants (a few string constants, written by hand), the
@@ -242,8 +244,7 @@ error type (`io::Error` and `io::Result`), the lexical path normalisation (a sho
 parts), and the child process (`std::process::Command`).
 
 Not added: a colour crate, an error-type crate, a test-framework crate, a splitting
-crate for the exec command (the shell already split it), `dirs` or `home` (the home directory comes from the
-`HOME` environment variable).
+crate for the exec command (the shell already split it).
 
 ## Step 1: Foundation, Bookmarks And Discovery
 
@@ -260,6 +261,7 @@ Checked on 25 Oct 2026. The README of each crate is the source.
 | `clap` | 4.6.7 | - |
 | `glob` | 0.3.4 | `glob()` iterates lazily and returns `Paths`. A pattern with no wildcards matches literally. `symlink_metadata` does not follow a link, so a broken symbolic link still counts as existing, the way `lexists` did. `MatchOptions::require_literal_leading_dot` makes a pattern skip dot-directories, as Python did. |
 | `walkdir` | 2.5.0 | With `follow_links`, `DirEntry::file_type` returns the target's type, and a symbolic-link loop surfaces as an error entry rather than a descent. |
+| `dirs` | 6.0.0 | `config_dir` applies the XDG rules, including ignoring a relative `XDG_CONFIG_HOME`; `home_dir` falls back to the password entry when `HOME` is unset. |
 | `tempfile` | 3.27.0 | `tempdir()` in integration tests. |
 
 These pins are a snapshot. Renovate updates them like any other dependency. A bump that changes a behaviour
@@ -364,8 +366,8 @@ comment.
 
 ## Module Breakdown
 
-Four files in `src/`, a flat crate, no `lib.rs`. `main` reads the environment (`HOME` and `XDG_CONFIG_HOME`)
-and passes paths down. No other file reads the environment.
+Four files in `src/`, a flat crate, no `lib.rs`. `main` resolves the bookmark path (through `dirs`) and
+passes paths down. No file reads the environment directly for paths.
 
 | File | Estimated lines | Contents |
 | --- | --- | --- |

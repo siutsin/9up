@@ -403,16 +403,10 @@ fn bookmark_path(cli: &Cli) -> PathBuf {
     if let Some(path) = cli.bookmark_file.as_deref().filter(|path| !path.is_empty()) {
         return PathBuf::from(path);
     }
-    let config = env::var("XDG_CONFIG_HOME")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(|value| discover::expand_home(&value))
-        .unwrap_or_else(|| home_dir().join(".config"));
+    // dirs applies the platform rules: on Linux a relative
+    // XDG_CONFIG_HOME is ignored, as the specification requires.
+    let config = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config"));
     config.join("gitup").join("bookmarks")
-}
-
-fn home_dir() -> PathBuf {
-    env::home_dir().unwrap_or_default()
 }
 
 fn exec(
