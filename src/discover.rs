@@ -5,8 +5,6 @@ use glob::MatchOptions;
 
 pub struct Repo {
     pub name: String,
-    // Read from Step 2 on, when update runs git in the repository.
-    #[allow(dead_code)]
     pub path: PathBuf,
 }
 

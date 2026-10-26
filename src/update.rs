@@ -1,0 +1,314 @@
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+
+/// A Report carries data only, so milestone 2 can collect reports from
+/// many threads and main can render them in path order.
+pub struct Report {
+    pub name: String,
+    pub steps: Vec<Step>,
+}
+
+pub enum Step {
+    Fetch {
+        remote: String,
+        outcome: FetchOutcome,
+    },
+    Error(String),
+}
+
+pub enum FetchOutcome {
+    Changed(Vec<(Kind, Vec<String>)>),
+    UpToDate,
+    NoRefspec,
+    Error(Vec<String>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    NewBranch,
+    NewTag,
+    BranchUpdate,
+}
+
+#[derive(Clone, Copy)]
+pub struct Options {
+    pub current_only: bool,
+    // Read from the branch-step change on.
+    #[allow(dead_code)]
+    pub fetch_only: bool,
+    pub prune: bool,
+}
+
+/// The one child-process choke point. Every git call goes through here:
+/// the working directory is set, the locale is pinned to English (the
+/// branch logic reads git's words), and standard input is null.
+pub fn run(dir: &Path, argv: &[&str]) -> io::Result<Output> {
+    Command::new("git")
+        .args(argv)
+        .current_dir(dir)
+        .env("LC_ALL", "C")
+        .env("LANGUAGE", "C")
+        .stdin(Stdio::null())
+        .output()
+}
+
+fn git_text(dir: &Path, argv: &[&str]) -> Option<String> {
+    let output = run(dir, argv).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+// Constructed from the branch-step change on.
+#[allow(dead_code)]
+pub struct RepoInfo {
+    pub git_dir: PathBuf,
+    pub work_dir: PathBuf,
+}
+
+/// Let git answer where the repository lives. A bare repository has no
+/// top level, so its working directory is the git directory.
+#[allow(dead_code)]
+pub fn repo_info(path: &Path) -> Option<RepoInfo> {
+    let git_dir = PathBuf::from(git_text(path, &["rev-parse", "--absolute-git-dir"])?);
+    let work_dir = git_text(path, &["rev-parse", "--show-toplevel"])
+        .map(PathBuf::from)
+        .unwrap_or_else(|| git_dir.clone());
+    Some(RepoInfo { git_dir, work_dir })
+}
+
+struct Remote {
+    name: String,
+    refspecs: Vec<String>,
+}
+
+/// The remotes in configuration order, with their fetch refspecs, from
+/// one `git config` call.
+fn remotes(path: &Path) -> Vec<Remote> {
+    let Some(text) = git_text(path, &["config", "--get-regexp", "^remote\\."]) else {
+        return Vec::new();
+    };
+    parse_remotes(&text)
+}
+
+fn parse_remotes(text: &str) -> Vec<Remote> {
+    let mut remotes: Vec<Remote> = Vec::new();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(' ') else {
+            continue;
+        };
+        let Some(rest) = key.strip_prefix("remote.") else {
+            continue;
+        };
+        let Some((name, field)) = rest.rsplit_once('.') else {
+            continue;
+        };
+        let index = match remotes.iter().position(|remote| remote.name == name) {
+            Some(index) => index,
+            None => {
+                remotes.push(Remote {
+                    name: name.to_owned(),
+                    refspecs: Vec::new(),
+                });
+                remotes.len() - 1
+            }
+        };
+        if field == "fetch" {
+            remotes[index].refspecs.push(value.to_owned());
+        }
+    }
+    remotes
+}
+
+/// The current branch's full name without the `refs/heads/` prefix.
+/// None means a detached HEAD. Never `--short`: a tag with the same
+/// name would change the answer.
+fn current_branch(path: &Path) -> Option<String> {
+    let full = git_text(path, &["symbolic-ref", "-q", "HEAD"])?;
+    full.strip_prefix("refs/heads/").map(str::to_owned)
+}
+
+/// The remote the branch tracks, from its configuration. Both the
+/// remote and the merge ref must be set. Configuration works on an
+/// unborn branch, where no refs exist yet.
+fn tracked_remote(path: &Path, branch: &str) -> Option<String> {
+    let remote = git_text(
+        path,
+        &["config", "--get", &format!("branch.{branch}.remote")],
+    )?;
+    git_text(
+        path,
+        &["config", "--get", &format!("branch.{branch}.merge")],
+    )?;
+    Some(remote)
+}
+
+/// A report that holds one repository error and nothing else.
+fn failed(name: &str, message: &str) -> Report {
+    Report {
+        name: name.to_owned(),
+        steps: vec![Step::Error(message.to_owned())],
+    }
+}
+
+pub fn update_repo(path: &Path, name: &str, options: &Options) -> Report {
+    let mut report = Report {
+        name: name.to_owned(),
+        steps: Vec::new(),
+    };
+    let all_remotes = remotes(path);
+    let picked: Vec<&Remote> = if options.current_only {
+        let Some(branch) = current_branch(path) else {
+            return failed(name, "HEAD is detached, so no remote is tracked.");
+        };
+        let Some(remote_name) = tracked_remote(path, &branch) else {
+            return failed(name, "The current branch tracks no remote.");
+        };
+        match all_remotes.iter().find(|remote| remote.name == remote_name) {
+            Some(remote) => vec![remote],
+            None => {
+                if all_remotes.is_empty() {
+                    return failed(name, "No remotes.");
+                }
+                // Not in the configuration at all: same outcome as a
+                // refspec-less remote, the fetch skip line.
+                report.steps.push(Step::Fetch {
+                    remote: remote_name,
+                    outcome: FetchOutcome::NoRefspec,
+                });
+                return report;
+            }
+        }
+    } else {
+        if all_remotes.is_empty() {
+            return failed(name, "No remotes.");
+        }
+        all_remotes.iter().collect()
+    };
+    for remote in picked {
+        if remote.refspecs.is_empty() {
+            report.steps.push(Step::Fetch {
+                remote: remote.name.clone(),
+                outcome: FetchOutcome::NoRefspec,
+            });
+            continue;
+        }
+        let outcome = fetch(path, &remote.name, options.prune);
+        let failed = matches!(outcome, FetchOutcome::Error(_));
+        report.steps.push(Step::Fetch {
+            remote: remote.name.clone(),
+            outcome,
+        });
+        if failed {
+            break; // The first failed fetch stops this repository's fetches.
+        }
+    }
+    report
+}
+
+fn fetch(path: &Path, remote: &str, prune: bool) -> FetchOutcome {
+    let mut argv = vec!["fetch", "--porcelain", remote];
+    if prune {
+        argv.push("--prune");
+    }
+    let output = match run(path, &argv) {
+        Ok(output) => output,
+        Err(err) => return FetchOutcome::Error(vec![format!("Could not run git: {err}")]),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut lines: Vec<String> = stderr
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("error:") || line.starts_with("fatal:"))
+            .map(str::to_owned)
+            .collect();
+        if lines.is_empty() {
+            lines.push(format!("git fetch {remote} failed with {}.", output.status));
+        }
+        return FetchOutcome::Error(lines);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let changed = parse_fetch_output(&stdout, remote);
+    if changed.is_empty() {
+        FetchOutcome::UpToDate
+    } else {
+        FetchOutcome::Changed(changed)
+    }
+}
+
+/// The changed references in fetch porcelain output, grouped by kind.
+/// A `*` flag is a new reference, a line with an old and a new value is
+/// an update, and every other flag is not reported.
+fn parse_fetch_output(text: &str, remote: &str) -> Vec<(Kind, Vec<String>)> {
+    let remote_prefix = format!("refs/remotes/{remote}/");
+    let mut groups: Vec<(Kind, Vec<String>)> = Vec::new();
+    for line in text.lines() {
+        // The line is <flag><space><old> <new> <ref>. The flag of an
+        // update line is itself a space, so the fields start after the
+        // first two characters.
+        let mut chars = line.chars();
+        let Some(flag) = chars.next() else { continue };
+        let rest = chars.as_str().strip_prefix(' ').unwrap_or(chars.as_str());
+        let Some(reference) = rest.split(' ').nth(2) else {
+            continue;
+        };
+        let kind = match flag {
+            '*' if reference.starts_with("refs/tags/") => Kind::NewTag,
+            '*' => Kind::NewBranch,
+            ' ' => Kind::BranchUpdate,
+            _ => continue,
+        };
+        let name = if let Some(short) = reference.strip_prefix(&remote_prefix) {
+            short.to_owned()
+        } else {
+            // Drop the first two parts: refs/tags/, refs/heads/, and so on.
+            reference
+                .splitn(3, '/')
+                .nth(2)
+                .unwrap_or(reference)
+                .to_owned()
+        };
+        match groups
+            .iter_mut()
+            .find(|(group_kind, _)| *group_kind == kind)
+        {
+            Some((_, names)) => names.push(name),
+            None => groups.push((kind, vec![name])),
+        }
+    }
+    groups
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_remotes_keeps_order_and_refspecs() {
+        let text = "remote.origin.url /srv/git.git\nremote.origin.fetch +refs/heads/*:refs/remotes/origin/*\nremote.upstream.url /srv/up.git\nremote.mirror.fetch +refs/*:refs/*\nremote.mirror.url /srv/mirror.git\n";
+        let remotes = parse_remotes(text);
+        assert_eq!(remotes.len(), 3);
+        assert_eq!(remotes[0].name, "origin");
+        assert_eq!(remotes[0].refspecs.len(), 1);
+        assert!(remotes[1].refspecs.is_empty());
+        assert_eq!(remotes[2].name, "mirror");
+        assert_eq!(remotes[2].refspecs.len(), 1);
+    }
+
+    #[test]
+    fn parse_fetch_output_classifies_and_names() {
+        let text = "  1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 refs/remotes/origin/main\n* 0000000000000000000000000000000000000000 3333333333333333333333333333333333333333 refs/remotes/origin/feat\n* 0000000000000000000000000000000000000000 4444444444444444444444444444444444444444 refs/tags/v1\n+ 1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 refs/remotes/origin/forced\n";
+        let groups = parse_fetch_output(text, "origin");
+        assert_eq!(
+            groups,
+            [
+                (Kind::BranchUpdate, vec!["main".to_owned()]),
+                (Kind::NewBranch, vec!["feat".to_owned()]),
+                (Kind::NewTag, vec!["v1".to_owned()]),
+            ]
+        );
+    }
+}
