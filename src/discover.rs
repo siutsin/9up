@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
 
 use glob::MatchOptions;
 
@@ -156,35 +157,34 @@ fn search(dir: &Path, depth: i32, header: &Path) -> Vec<Repo> {
             path: dir.to_path_buf(),
         }];
     }
+    let walk = WalkDir::new(dir)
+        .follow_links(true)
+        .min_depth(1)
+        // A negative depth becomes the unlimited case.
+        .max_depth(depth.try_into().unwrap_or(usize::MAX));
     let mut repos = Vec::new();
-    collect(dir, depth, header, &mut repos);
-    repos
-}
-
-fn collect(dir: &Path, remaining: i32, header: &Path, repos: &mut Vec<Repo>) {
-    if remaining == 0 {
-        return;
-    }
-    let Ok(entries) = fs::read_dir(dir) else {
-        return; // An unreadable directory is skipped.
-    };
-    let mut subdirs: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.file_name().is_some_and(|name| name != ".git"))
-        .filter(|path| fs::metadata(path).is_ok_and(|meta| meta.is_dir()))
-        .collect();
-    subdirs.sort();
-    for subdir in subdirs {
-        if is_repo(&subdir) {
+    let mut iter = walk.into_iter();
+    while let Some(entry) = iter.next() {
+        // An unreadable directory (or a symbolic-link loop, which
+        // walkdir reports as an error) is skipped.
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if path.file_name().is_some_and(|name| name == ".git") {
+            iter.skip_current_dir();
+            continue;
+        }
+        if is_repo(path) {
             repos.push(Repo {
-                name: name_for(&subdir, header),
-                path: subdir,
+                name: name_for(path, header),
+                path: entry.into_path(),
             });
-        } else {
-            collect(&subdir, remaining - 1, header, repos);
+            iter.skip_current_dir(); // A found repository is not descended into.
         }
     }
+    repos
 }
 
 fn name_for(repo: &Path, header: &Path) -> String {
