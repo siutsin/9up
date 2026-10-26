@@ -4,16 +4,16 @@ Status: approved plan for a Rust CLI inspired by `gitup` 0.5.2. The plan was app
 request into `master`, and the implementation has followed it.
 
 9up is a new tool, not a port. It does the jobs `gitup` (the Python `git-repo-updater` by Ben Kurtovic) does, in
-the same broad shape, because that shape works. Feature parity is the goal: the same jobs and the same bookmark
-file. Everything else is 9up's own, and idiomatic Rust wins: where `gitup`'s shape and idiomatic Rust conflict,
-the plan follows Rust.
+the same broad shape, because that shape works. Feature parity is the goal: the same jobs. Its state is its
+own, a TOML config file (see Config File), not `gitup`'s bookmark file. Everything else is 9up's own, and
+idiomatic Rust wins: where `gitup`'s shape and idiomatic Rust conflict, the plan follows Rust.
 
 ## Goal And Scope
 
 | Item | Decision |
 | --- | --- |
 | Problem | Keep many local git repositories current without visiting each one. |
-| Milestone 1 | The same jobs as `gitup` 0.5.2: update repositories under given paths, update bookmarked repositories, manage the bookmark file, and run a command in each repository. Runs sequentially. |
+| Milestone 1 | The same jobs as `gitup` 0.5.2: update repositories under given paths, update the repositories listed in its config file, manage that config file, and run a command in each repository. Runs sequentially. |
 | Milestone 2 | Concurrency. Not planned in detail here, and the architecture must not block it. |
 | Repository name | `9up` |
 | Cargo package name | `nine-up`. Cargo rejects a package name that starts with a digit. |
@@ -21,7 +21,7 @@ the plan follows Rust.
 | Version | `0.1.0` |
 | Out of scope | Releases, a Homebrew formula, Windows support, and any feature `gitup` does not have. |
 
-Two terms run through the plan. A path is a directory passed on the command line, or a bookmark. A repository
+Two terms run through the plan. A path is a directory passed on the command line, or an entry in the config file. A repository
 is a git repository found under a path. For a bare repository, the repository itself is the path's only
 repository.
 
@@ -35,13 +35,13 @@ Subcommands, the idiomatic clap shape. One verb per run.
 
 | Invocation | Job |
 | --- | --- |
-| `9up [paths...]` | Update the repositories under the paths, or the bookmarked repositories when no path is given. The bare form of `update`, with the same options. |
+| `9up [paths...]` | Update the repositories under the paths, or the configured repositories when no path is given. The bare form of `update`, with the same options. |
 | `9up update [paths...]` | The same, spelled out. |
-| `9up add <paths...>` | Add paths to the bookmark file. |
-| `9up delete <paths...>` | Delete paths from the bookmark file. |
-| `9up list` | List the bookmarks. |
-| `9up clean` | Remove bookmarks whose paths no longer exist. |
-| `9up exec [paths...] -- <command...>` | Run the command in each repository under the paths, or in the bookmarked repositories when no path is given. Everything after `--` is the command and its arguments, as the shell split them. Takes `--depth`, with the same meaning as on `update`. |
+| `9up add <paths...>` | Add paths to the config file. |
+| `9up delete <paths...>` | Delete paths from the config file. |
+| `9up list` | List the configured paths. |
+| `9up clean` | Remove configured paths that no longer exist. |
+| `9up exec [paths...] -- <command...>` | Run the command in each repository under the paths, or in the configured repositories when no path is given. Everything after `--` is the command and its arguments, as the shell split them. Takes `--depth`, with the same meaning as on `update`. |
 
 A path named like a command (`list`, `clean`, `add`, `delete`, `exec`, `update`) cannot use the bare form.
 Spell it out instead: `9up update list`, or `9up ./list`.
@@ -55,8 +55,9 @@ The `update` options:
 | `-p`, `--prune` | bool | `false` | Pass `--prune` to each fetch. |
 | `-t`, `--depth` | value | `3` | Search depth below each path. Negative values search with no limit. The path itself is always checked, at any depth value. |
 
-One global option, accepted by every command: `-b`, `--bookmark-file <path>`, the bookmark file to use. The
-value is required. An empty value uses the default path (see Bookmark File).
+One global option, accepted by every command: `-C`, `--config <path>`, the config file to use. (`-c` is
+`update`'s `--current-only`, so the config option takes `-C`.) The value is required. An empty value uses the
+default path (see Config File).
 
 One verb per run is the one combined-invocation loss against `gitup`: add-then-update takes two runs. Not
 included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag actions.
@@ -65,7 +66,7 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
 
 1. A usage error exits with code 2 before any other output. Help and version print and exit with code 0.
    Every other run prints the banner first: `9up`, then a blank line.
-2. Path resolution, for command-line paths and bookmarks alike, in this order:
+2. Path resolution, for command-line paths and configured paths alike, in this order:
    - `~` at the start expands to the home directory. Only a leading `~` alone or `~/` expands. `~user` does
      not expand, and `$VAR` never expands.
    - An empty path prints a "doesn't exist" error.
@@ -86,8 +87,8 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
      of 0.
    - A path error names the path as given, after `~` expansion. It does not use the absolute form the header
      uses.
-3. When an update or an `exec` run reaches the bookmarks and the bookmark file has none, an update prints a
-   hint line that says so. An `exec` run prints nothing.
+3. When an update or an `exec` run reaches the configured paths and the config file lists none, an update
+   prints a hint line that says so. An `exec` run prints nothing.
 4. A repository updates like this:
    - Pick the remotes: all of them, or with `--current-only` only the remote that the current branch tracks.
      That remote comes from the branch's configuration, so it works on an unborn branch.
@@ -118,11 +119,11 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
    working directory, so it uses the repository directory itself. The command's standard output prints
    first, then its standard error, each split into lines the way `str::lines` splits. The command's exit
    status is ignored. A command that cannot start prints an error line. An `exec` with no command after
-   `--` is a usage error (exit 2), and it runs before anything else, so it never touches the bookmark file.
+   `--` is a usage error (exit 2), and it runs before anything else, so it never touches the config file.
 7. Every `git` child process runs through the `Sys` seam (see Git Backend), which pins the locale to English.
    The skip reasons in item 5 match English git output, so the pin is part of the design, not an accident.
-8. Exit codes: 0 for a normal run, 2 for a usage error, and 1 when a bookmark write fails. A failed write
-   also prints an error to standard error. An unreadable or deleted current directory also exits 1, with
+8. Exit codes: 0 for a normal run, 2 for a usage error, and 1 when a config write fails or the config file
+   cannot be parsed. Both also print an error to standard error. An unreadable or deleted current directory also exits 1, with
    the error on standard error, for every command except `list` and `clean`, which do not need it.
 
 ### Output
@@ -140,35 +141,42 @@ green for a repository name, red for an error or a skip, cyan for new or updated
 colour for up-to-date lines. Standard output that is not a terminal gets no colour codes. Standard error never
 gets colour codes.
 
-### Bookmark File
+### Config File
 
-The bookmark file format is `gitup`'s, so an existing file carries over unchanged. One bookmark per line. The
-default path sits under the platform config directory (the `dirs` crate): `$XDG_CONFIG_HOME/gitup/bookmarks`,
-or `~/.config/gitup/bookmarks` when the variable is unset or empty. A relative value is ignored, as the XDG
-specification requires, so a `~/…` value is ignored rather than expanded. A non-UTF-8 absolute
-`XDG_CONFIG_HOME` is accepted. `-b ""` also uses the default path. When `dirs::config_dir()` returns no
-directory at all, `bookmark_path()` falls back to a relative `.config` path. On macOS the platform directory is `~/Library/Application Support`,
-and `XDG_CONFIG_HOME` is not consulted.
+9up keeps its state in one TOML file of its own; `gitup`'s bookmark file is not read. The document holds one
+key, `repositories`: an array of path strings, in order. Any other keys are left alone, for settings that may
+come later.
 
-- Read: split on `\n`, trim each line, drop empty lines. A missing or unreadable file means no bookmarks.
-- Write: create the parent directory, join the entries with `\n`, with no final newline. Every write
-  replaces the whole file, in the original order, with comments in place.
-- A bookmark is stored as its absolute path, normalised without a filesystem access: duplicate separators
-  collapse, `.` parts drop, `..` parts resolve against the parts before them, and a trailing separator drops.
-  A leading `~` (alone or as `~/`) keeps it, and the path is only normalised lexically. An empty path
-  becomes the current directory.
-- A relative `add` value resolves against the current directory first. An added path does not need to exist.
-- Add reports each path as added or already bookmarked, and always writes. In `add x x`, the second `x` is
-  already bookmarked.
-- Delete matches a stored bookmark exactly, after the same normalisation. Each argument removes only the
-  first match. Delete reports each path as deleted or not bookmarked. With an empty file, delete reports
-  every path as not bookmarked and does not write.
-- List prints the entries as stored, or a note when the file has none.
-- `clean` removes an entry when it is not a directory and its glob has no match. This drops comment lines
-  too, because a comment is not a directory. `clean` prints a note when there is nothing to clean, and a
-  note when every entry is valid.
-- Invalid UTF-8 in the file is replaced with the Unicode replacement character, and the next write stores
-  the replaced text.
+The default path sits under the platform config directory (the `dirs` crate), in a `9up` directory:
+`$XDG_CONFIG_HOME/9up/config.toml`, or `~/.config/9up/config.toml` when the variable is unset or empty. A
+relative value is ignored, as the XDG specification requires. A non-UTF-8 absolute `XDG_CONFIG_HOME` is
+accepted. On macOS the platform directory is `~/Library/Application Support`, so the file is
+`~/Library/Application Support/9up/config.toml`, and `XDG_CONFIG_HOME` is not consulted. `-C ""` also uses
+the default path. When `dirs::config_dir()` returns no directory at all, the fallback is a relative
+`.config/9up/config.toml` path.
+
+- Read: parse the file as TOML (the `toml_edit` crate). A missing or unreadable file means no repositories.
+  A file that is not valid TOML, a file whose content is not valid UTF-8, or a `repositories` value that
+  is not an array of strings, cannot be parsed: the run prints an error to standard error and exits 1. A
+  missing `repositories` key means no repositories.
+- Write: edit the parsed document in place and save it, so comments and any other keys stay as they are;
+  only the `repositories` array changes. A write creates the parent directory. When the file does not
+  exist, the new document is the one key, with each entry on its own line.
+- A path is stored as its absolute form, normalised without a filesystem access: duplicate separators
+  collapse, `.` parts drop, `..` parts resolve against the parts before them, and a trailing separator
+  drops. A leading `~` (alone or as `~/`) keeps it, and the path is only normalised lexically. An empty
+  path becomes the current directory.
+- A relative `add` value resolves against the current directory first. An added path does not need to
+  exist.
+- Add reports each path as added or already present, and always writes. In `add x x`, the second `x` is
+  already present.
+- Delete matches a stored path exactly, after the same normalisation. Each argument removes only the
+  first match. Delete reports each path as deleted or not present. Delete writes only when it removes an
+  entry, so it does not write when there are no repositories or when no argument matches.
+- List prints the entries as stored, or a note when there are none.
+- `clean` removes an entry when it is not a directory and its glob has no match. A comment entry (see
+  Behaviour item 2) is never removed. `clean` writes only when it removes an entry. When it removes
+  nothing, it prints a note that says so.
 
 ### Differences From gitup
 
@@ -176,17 +184,18 @@ Feature parity allows these differences. The Feature Spec above is the whole con
 the implementer chooses, and `gitup` is a guide, not a rule.
 
 Where Python crashed or printed a traceback, 9up prints an error line instead: an unconfigured
-`--current-only` remote, a failed `git branch -f`, a command that cannot start, and a failed bookmark
+`--current-only` remote, a failed `git branch -f`, a command that cannot start, and a failed config
 write (which also exits 1).
 
 | Difference | Reason |
 | --- | --- |
 | The interface is subcommands, not flags. One verb per run. | The idiomatic clap shape. |
+| The state file is 9up's own TOML config; `gitup`'s bookmark file is not read. | A new tool keeps its own state, in its own format. |
 | No migration from `~/.gitup` or the old XDG `config.ini`. | One default path, no legacy state. |
 | Long options must be written in full. Argparse accepted any unique prefix. | Clap has no prefix matching. |
 | An exec command is separate arguments after `--`, split by the shell. Python took one string and split it. | No re-splitting what the shell already split. |
 | The current branch's upstream comes from git's own `%(upstream)` value. | One source instead of a reconstruction. |
-| A `**` pattern in a bookmark path is recursive. | The `glob` crate's semantics. |
+| A `**` pattern in a configured path is recursive. | The `glob` crate's semantics. |
 | New references after a fetch are classified by the local reference name. | Clearer than the remote-side name. |
 | A symbolic-link cycle in the search ends that branch instead of looping. | `walkdir` detects the loop; `gitup` does not terminate on one. |
 | In a bare repository, the HEAD branch updates like any other. | `gitup` skips it as "not possible to fast-forward" and leaves it stale (probed against 0.5.2); `git branch -f` on a bare HEAD branch works, so the update is safe. |
@@ -229,15 +238,16 @@ otherwise.
 
 ### Dependencies
 
-Four crates, plus one for tests. The standard library covers the rest. Every version is pinned exactly (`=` in `Cargo.toml`), so each
+Five crates, plus one for tests. The standard library covers the rest. Every version is pinned exactly (`=` in `Cargo.toml`), so each
 update arrives as a Renovate pull request instead of drifting inside a range.
 
 | Crate | Use |
 | --- | --- |
 | `clap` (derive feature) | Parse the command line: a `Parser` struct with a `Subcommand` enum. |
-| `glob` | Expand the glob patterns that a bookmark path can contain, with `require_literal_leading_dot` set, as Python skipped dot entries. |
+| `glob` | Expand the glob patterns that a configured path can contain, with `require_literal_leading_dot` set, as Python skipped dot entries. |
 | `walkdir` | The depth-limited directory search in `discover.rs`: symbolic links followed, loop detection. Order comes from `repos.sort_by(name)` in `resolve()`, not from `WalkDir`, which is unsorted. |
-| `dirs` | The platform config and home directories: the XDG rules for the default bookmark path, and the home lookup behind `~` expansion. |
+| `dirs` | The platform config and home directories: the XDG rules for the default config path, and the home lookup behind `~` expansion. |
+| `toml_edit` | The config file: parse the TOML document and edit it in place, changing only the `repositories` array. |
 | `tempfile` (development only) | Temporary directories in integration tests. |
 
 What the standard library covers here: the colour constants (a few string constants, written by hand), the
@@ -247,10 +257,10 @@ parts), and the child process (`std::process::Command`).
 Not added: a colour crate, an error-type crate, a test-framework crate, a splitting
 crate for the exec command (the shell already split it).
 
-## Step 1: Foundation, Bookmarks And Discovery
+## Step 1: Foundation, Config And Discovery
 
-One pull request builds the crate, the bookmark commands and repository discovery. No repository updates
-yet: paths and bookmarks print their headers, the repository names under them, comments and path errors.
+One pull request builds the crate, the config commands and repository discovery. No repository updates
+yet: paths and configured entries print their headers, the repository names under them, comments and path errors.
 
 ### Verified Versions
 
@@ -263,6 +273,7 @@ Checked on 25 Oct 2026. The README of each crate is the source.
 | `glob` | 0.3.4 | `glob()` iterates lazily and returns `Paths`. A pattern with no wildcards matches literally. `symlink_metadata` does not follow a link, so a broken symbolic link still counts as existing, the way `lexists` did. `MatchOptions::require_literal_leading_dot` makes a pattern skip dot-directories, as Python did. |
 | `walkdir` | 2.5.0 | With `follow_links`, `DirEntry::file_type` returns the target's type, and a symbolic-link loop surfaces as an error entry rather than a descent. |
 | `dirs` | 6.0.0 | `config_dir` applies the XDG rules, including ignoring a relative `XDG_CONFIG_HOME`; `home_dir` falls back to the password entry when `HOME` is unset. |
+| `toml_edit` | 0.25.17 | Parsing a document and editing it in place keeps comments, order and other keys. |
 | `tempfile` | 3.27.0 | `tempdir()` in integration tests. |
 
 These pins are a snapshot. Renovate updates them like any other dependency. A bump that changes a behaviour
@@ -277,7 +288,7 @@ this plan states gets a plan update in the same pull request.
 | `clippy.toml` | `allow-unwrap-in-tests = true` and `allow-expect-in-tests = true`. |
 | `src/main.rs` | Entry point, the `Cli` struct, the command enum, dispatch, colour, and all output. In Step 1 it renders headers, names, comments and path errors. Report rendering arrives with `update.rs` in Step 2. |
 | `src/sys.rs` | The `App` context, the `Sys` trait and `RealSys`. |
-| `src/bookmarks.rs` | The bookmark file: read, normalise, add, delete, clean, save. |
+| `src/config.rs` | The config file: read, normalise, add, delete, clean, save. |
 | `src/discover.rs` | Path expansion, glob expansion, missing-path handling and the depth-limited search. Runs no `git`. |
 | `src/update.rs` | Arrives in Step 2. See Module Breakdown. |
 | `tests/cli.rs` | Integration tests for the binary. |
@@ -286,12 +297,17 @@ this plan states gets a plan update in the same pull request.
 | `.github/workflows/lint.yaml` | Exists, with the `markdown` job. Step 1 adds the `rust` job. Details under CI Workflows. |
 | `.github/workflows/test.yaml` | A `test` job (`cargo test --locked` on `ubuntu-latest` and `macos-latest`) and a `coverage` job (`cargo llvm-cov --locked` on `ubuntu-latest`). |
 
+The code that follows this plan removes `src/bookmarks.rs`: it is renamed to `src/config.rs` above. In
+`src/sys.rs` the `App` field `bookmark_file` is renamed to `config_file`.
+
 Already in place, unchanged unless a step says otherwise: `rust-toolchain.toml`, the `claude.yaml` and
 `zizmor.yaml` workflows, `mise.toml` (pins node, markdownlint, zizmor and cargo-llvm-cov) and `.markdownlint-cli2.jsonc`.
 `AGENTS.md` is updated (the Feature Spec is the reference; the verify line lists the four checks) and
 `README.md` is updated (Development lists the four checks; the credit says inspired by, not a port). The
-workflows, `mise.toml` and the markdownlint configuration are baseline: they stay, and the steps build on
-them.
+README Usage rewrite is a required change in Step 3: it drops the `gitup` bookmark file, the
+`gitup/bookmarks` path, the `-b` flag and the bookmark wording, and names the TOML config file, the
+`-C`/`--config` flag and the default config path instead. The workflows, `mise.toml` and the
+markdownlint configuration are baseline: they stay, and the steps build on them.
 
 Not added: `rustfmt.toml` (the defaults), `deny.toml`, `.cargo/config.toml`, `build.rs`, a cargo workspace.
 
@@ -330,7 +346,7 @@ markdownlint-cli2 '**/*.md'
 
 ### Clap Notes
 
-- Derive API. `Cli` is a `Parser` struct with the global bookmark-file option and an optional subcommand.
+- Derive API. `Cli` is a `Parser` struct with the global config option and an optional subcommand.
   The commands are a `Subcommand` enum: `Update`, `Add`, `Delete`, `List`, `Clean`, `Exec`.
 - The bare form is an argv shim in `main`: when the first positional argument is not a command name,
   `update` is inserted after the program name before clap parses. A flattened update struct cannot do
@@ -341,7 +357,7 @@ markdownlint-cli2 '**/*.md'
   depth argument.
 - `add` and `delete` take `num_args(1..)` path lists. `exec` takes optional paths, then
   `trailing_var_arg` after a required `--`: everything after `--` is the command's argv, untouched.
-- Path and value fields are `String`, not `PathBuf`: an empty `-b ""` must parse, and it means the default
+- Path and value fields are `String`, not `PathBuf`: an empty `-C ""` must parse, and it means the default
   path. `PathBuf` rejects empty values at parse time.
 
 ### CI Workflows
@@ -364,14 +380,16 @@ comment.
 - All four local checks are green, and CI is green.
 - `cargo run -- --version` prints `9up 0.1.0`.
 - `README.md` has three sections: Install ("Not yet. `Cargo.toml` arrives in Step 1." until the crate lands,
-  then the `cargo install --path .` form), Development (the four checks) and Credit.
+  then the `cargo install --path .` form), Development (the four checks) and Credit. Its Usage section
+  stays until Step 3, where it is rewritten (see Files).
 - The first Renovate run tracks `rust-toolchain.toml` and the crates.
 
 ## Module Breakdown
 
 Five files in `src/`, a flat crate, no `lib.rs`. The architecture is a composition root (owner's
 direction, 26 Oct 2026): `main` builds one `App` context in `sys.rs` — the `Sys` services, the working
-directory, the home directory, the bookmark file, the colour flag and the output — and passes it down.
+directory, the home directory, the config file (the `config_file` field, renamed from `bookmark_file`),
+the colour flag and the output — and passes it down.
 Nothing below `main` reads the environment, calls `dirs`, or builds a service. Path probes (metadata,
 the `.git` layout, the `walkdir` search) work on path values and need no service.
 
@@ -379,7 +397,7 @@ the `.git` layout, the `walkdir` search) work on path values and need no service
 | --- | --- | --- |
 | `main.rs` | ~230 | `Cli` and the command enum, the composition root, dispatch, banner, path headers, and rendering of every report. The only file that writes output, apart from the usage error. |
 | `sys.rs` | ~70 | The `App` context, the `Sys` trait (git, exec, file read/write) and `RealSys`. Tests substitute a stub `Sys` to force failures. |
-| `bookmarks.rs` | ~80 | `load`, `save`, `normalize`, `has`. No output. |
+| `config.rs` | ~90 | The config file's entries, plus `load`, `save`, `normalize`, `has`. No output. |
 | `discover.rs` | ~100 | `expand_home`, `glob_paths`, `resolve` and the depth-limited search. No `git` calls. |
 | `update.rs` | ~260 | `repo_info`, `update_repo`, `exec_repo`, all over the `Sys` seam. No output. |
 
@@ -436,14 +454,15 @@ One pull request per step, in order. Each pull request ends with all four local 
 
 | Step | Content | Crates that arrive |
 | --- | --- | --- |
-| 1 | Crate, lint policy, CI, `Cli` with the bookmark commands, `bookmarks.rs`, `discover.rs`. The bookmark commands work. Discovery prints headers, names, comments and path errors. | `clap`, `glob`, `walkdir`, `dirs`, `tempfile` |
+| 1 | Crate, lint policy, CI, `Cli` with the config commands, `config.rs`, `discover.rs`. The config commands work. Discovery prints headers, names, comments and path errors. | `clap`, `glob`, `walkdir`, `dirs`, `toml_edit`, `tempfile` |
 | 2 | `update.rs`: `run`, `repo_info`, remotes, fetch, branch logic, and the `update` command with its options. Reports replace the name list under each header. | none |
 | 3 | The `exec` command, the feature check and release prep. | none |
 
 Step 3 in detail: the feature check. Build one fixture directory tree with repositories in known states
 (ahead, behind, diverged, no upstream, bare). Make two copies. Run Python `gitup` on one copy and `9up` on
 the other, with equivalent invocations. Compare the result, not the text: the branch positions, the
-bookmark file and the exit codes must match. Then finish the README: usage, the commands, and the
+paths listed in each tool's state file, and the exit codes must match. The state files themselves do
+not match: the formats differ by design. Then finish the README: usage, the commands, and the
 `cargo install --path .` line.
 
 ## Tests
@@ -457,8 +476,8 @@ Three layers:
   `update.rs`, and report rendering in `main.rs`.
 - Integration tests in `tests/cli.rs`, which run the compiled binary in temporary directories with real `git`
   repositories. The fixtures run `git init -b main` and local file-path remotes, so the suite needs no network.
-- `tests/cli.rs` sets `HOME` to a temporary directory and passes `-b` with an explicit path, so no test reads
-  the developer's real bookmark file. Colour is off in tests (not a terminal). Set `GIT_CONFIG_NOSYSTEM=1` and
+- `tests/cli.rs` sets `HOME` to a temporary directory and passes `-C` with an explicit path, so no test reads
+  the developer's real config file. Colour is off in tests (not a terminal). Set `GIT_CONFIG_NOSYSTEM=1` and
   pass `-c init.defaultBranch=main` where a fixture needs it, so a developer's global git configuration cannot
   change a result.
 
@@ -466,11 +485,11 @@ Behaviour tables, one row per case:
 
 | Area | Cases |
 | --- | --- |
-| Commands | Bare `9up` updates the bookmarks and nothing else. Bare `9up <path>` updates only that path. `update` with no paths updates the bookmarks. `add x` adds x and updates nothing. `delete`, `list` and `clean` each do only their own job. `-b` works on every command. |
-| Bookmarks | Add stores the absolute, normalised path. Add of an existing path reports it as already bookmarked. A relative add resolves against the current directory. Delete matches exactly, after normalisation. Delete removes only the first match. Delete of a missing path reports it as not bookmarked. List prints the paths in file order. Clean removes a missing path and keeps an existing one. A comment line survives add and delete, in place. Clean drops it. |
-| Discovery | A repository at the path. Bare repositories: at the path, below the path, and at depth 0. A repository below the path, at each depth from 0 up. A `.git` file (a linked worktree) counts. A directory with no repositories, and an empty directory: header with a count of 0. A file given as a path. A symbolic link to a directory is followed. A broken symbolic link as a path: header with a count of 0. A comment line: never searched, and its text prints with the `#` characters stripped. A glob bookmark: matches expand; `**` recurses; no match means missing. A `*` pattern does not match a dot-directory. The search does not descend into a found repository. Repositories print in name order. Display names: a repository below the base is named by its path relative to the base. A path that is itself a repository is named by its last component. A glob match is named relative to the deepest common parent of the base and the repository. |
+| Commands | Bare `9up` updates the configured paths and nothing else. Bare `9up <path>` updates only that path. `update` with no paths updates the configured paths. `add x` adds x and updates nothing. `delete`, `list` and `clean` each do only their own job. `-C` works on every command. `-C ""` uses the default path. |
+| Config | Add stores the absolute, normalised path. Add of an existing path reports it as already present. A relative add resolves against the current directory. Delete matches exactly, after normalisation. Delete removes only the first match. Delete of a missing path reports it as not present, and a delete that removes nothing leaves the file unchanged. List prints the paths in file order. Clean removes a missing path and keeps an existing one. Clean keeps a comment entry, and a clean that removes nothing leaves the file unchanged. A TOML comment and an unknown key survive add and delete, unchanged. A file that is not valid TOML, a file that is not valid UTF-8, and one whose `repositories` is not an array of strings, fail with an error and exit 1. A missing `repositories` key means no repositories. The default path is `$XDG_CONFIG_HOME/9up/config.toml` on Linux, `~/Library/Application Support/9up/config.toml` on macOS, and the relative `.config/9up/config.toml` fallback when no config directory is found. A `gitup` bookmark file at the old path is ignored. |
+| Discovery | A repository at the path. Bare repositories: at the path, below the path, and at depth 0. A repository below the path, at each depth from 0 up. A `.git` file (a linked worktree) counts. A directory with no repositories, and an empty directory: header with a count of 0. A file given as a path. A symbolic link to a directory is followed. A broken symbolic link as a path: header with a count of 0. A comment line: never searched, and its text prints with the `#` characters stripped. A glob entry: matches expand; `**` recurses; no match means missing. A `*` pattern does not match a dot-directory. The search does not descend into a found repository. Repositories print in name order. Display names: a repository below the base is named by its path relative to the base. A path that is itself a repository is named by its last component. A glob match is named relative to the deepest common parent of the base and the repository. |
 | Update | Up to date. Behind: fast-forward. Ahead. Diverged: skipped, fast-forward not possible. No upstream: skipped silently, prints nothing. Missing upstream reference: skipped silently, prints nothing. No merge base: skipped silently, prints nothing. Local changes block the current branch: skipped with the uncommitted-changes reason. `--current-only`: only the tracked remote fetches, and the branch step still visits every branch. An unborn branch with `--current-only`: the tracked remote fetches, and the branch step visits nothing. `--fetch-only`: no branch step. `--prune`: a branch deleted on the remote disappears locally. Two remotes: both fetch. First fetch fails: the second remote never fetches, and the branch step still runs. A remote with no reference lines: skip line. A new branch and a new tag arrive, named by the naming rule. A detached HEAD. A bare repository. |
-| Exec | The command runs in the working directory. Standard output prints before standard error. The exit status is ignored. A missing command prints the error line. Arguments after `--` reach the command untouched, quotes included. A `--depth` on exec limits the search the way update's does. `exec` with no command is a usage error, and the bookmark file is unchanged. With no bookmarks and no paths, `exec` prints nothing. |
+| Exec | The command runs in the working directory. Standard output prints before standard error. The exit status is ignored. A missing command prints the error line. Arguments after `--` reach the command untouched, quotes included. A `--depth` on exec limits the search the way update's does. `exec` with no command is a usage error, and the config file is unchanged. With no configured paths and no paths given, `exec` prints nothing. |
 
 The clippy configuration allows `unwrap` and `expect` in tests only. Test helper functions can use both,
 with the reason in the `clippy.toml` comment.
