@@ -34,8 +34,7 @@ fn add_list_and_delete_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("config.toml");
     let b = file.to_str().unwrap();
-    // The binary stores the physical path: the current directory
-    // resolves symlinks, and on macOS the temp dir sits behind /var.
+    // getcwd resolves symlinks and macOS puts the temp dir behind /var, so canonicalise to match the stored path.
     let repo = fs::canonicalize(dir.path()).unwrap().join("repo");
     let repo = repo.display().to_string();
 
