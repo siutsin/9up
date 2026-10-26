@@ -34,25 +34,26 @@ fn add_list_and_delete_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("config.toml");
     let b = file.to_str().unwrap();
+    // The binary stores the physical path: the current directory
+    // resolves symlinks, and on macOS the temp dir sits behind /var.
+    let repo = fs::canonicalize(dir.path()).unwrap().join("repo");
+    let repo = repo.display().to_string();
 
     let added = nine_up(dir.path(), &["-C", b, "add", "repo"]);
     assert!(added.status.success());
     assert!(stdout(&added).contains("Added"));
-    assert!(stdout(&added).contains(&dir.path().join("repo").display().to_string()));
+    assert!(stdout(&added).contains(&repo));
     // A new file is the one key, with each entry on its own line.
     assert_eq!(
         fs::read_to_string(&file).unwrap(),
-        format!(
-            "repositories = [\n    \"{}\"\n]\n",
-            dir.path().join("repo").display()
-        )
+        format!("repositories = [\n    \"{repo}\"\n]\n")
     );
 
     let again = nine_up(dir.path(), &["-C", b, "add", "repo"]);
     assert!(stdout(&again).contains("already in the config file"));
 
     let listed = nine_up(dir.path(), &["--config", b, "list"]);
-    assert!(stdout(&listed).contains(&dir.path().join("repo").display().to_string()));
+    assert!(stdout(&listed).contains(&repo));
 
     let deleted = nine_up(dir.path(), &["-C", b, "delete", "repo"]);
     assert!(stdout(&deleted).contains("Deleted"));
