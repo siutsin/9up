@@ -78,7 +78,8 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
    - An existing path that is not a directory prints an "isn't a repository" error. So does a directory when
      the depth is 0.
    - Any other directory is searched. The search follows symbolic links to directories and enters hidden
-     directories. It skips a directory it cannot read.
+     directories. It skips a directory it cannot read. A symbolic-link cycle with an unlimited depth does
+     not terminate, as in `gitup`.
    - Depth: the path itself is depth 0. A repository directly below the path is depth 1. Depth `d` finds
      repositories down to `d` levels below the path. The search does not descend into a repository it found.
    - A directory with no repositories below it, including an empty directory, prints its header with a count
