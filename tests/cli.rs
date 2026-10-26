@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 
 fn nine_up(dir: &Path, args: &[&str]) -> Output {
     // HOME points at the test's temp dir, so no test reads the real
-    // default bookmark file.
+    // default config file.
     Command::new(env!("CARGO_BIN_EXE_9up"))
         .args(args)
         .current_dir(dir)
@@ -32,29 +32,37 @@ fn stdout(output: &Output) -> String {
 #[test]
 fn add_list_and_delete_round_trip() {
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("bookmarks");
+    let file = dir.path().join("config.toml");
     let b = file.to_str().unwrap();
 
-    let added = nine_up(dir.path(), &["-b", b, "add", "repo"]);
+    let added = nine_up(dir.path(), &["-C", b, "add", "repo"]);
     assert!(added.status.success());
     assert!(stdout(&added).contains("Added"));
     assert!(stdout(&added).contains(&dir.path().join("repo").display().to_string()));
+    // A new file is the one key, with each entry on its own line.
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        format!(
+            "repositories = [\n    \"{}\"\n]\n",
+            dir.path().join("repo").display()
+        )
+    );
 
-    let again = nine_up(dir.path(), &["-b", b, "add", "repo"]);
-    assert!(stdout(&again).contains("already bookmarked"));
+    let again = nine_up(dir.path(), &["-C", b, "add", "repo"]);
+    assert!(stdout(&again).contains("already in the config file"));
 
-    let listed = nine_up(dir.path(), &["-b", b, "list"]);
+    let listed = nine_up(dir.path(), &["--config", b, "list"]);
     assert!(stdout(&listed).contains(&dir.path().join("repo").display().to_string()));
 
-    let deleted = nine_up(dir.path(), &["-b", b, "delete", "repo"]);
+    let deleted = nine_up(dir.path(), &["-C", b, "delete", "repo"]);
     assert!(stdout(&deleted).contains("Deleted"));
 
-    let missing = nine_up(dir.path(), &["-b", b, "delete", "repo"]);
-    assert!(stdout(&missing).contains("not bookmarked"));
+    let missing = nine_up(dir.path(), &["-C", b, "delete", "repo"]);
+    assert!(stdout(&missing).contains("not in the config file"));
 
-    let empty = nine_up(dir.path(), &["-b", b, "list"]);
-    assert!(stdout(&empty).contains("No bookmarks."));
-    assert_eq!(fs::read_to_string(&file).unwrap(), "");
+    let empty = nine_up(dir.path(), &["-C", b, "list"]);
+    assert!(stdout(&empty).contains("No repositories configured."));
+    assert_eq!(fs::read_to_string(&file).unwrap(), "repositories = []\n");
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -104,40 +112,51 @@ fn discovery_prints_headers_and_names() {
 }
 
 #[test]
-fn bare_run_uses_the_bookmarks_and_clean_prunes_them() {
+fn bare_run_uses_the_configured_paths_and_clean_prunes_them() {
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("bookmarks");
+    let file = dir.path().join("config.toml");
     let b = file.to_str().unwrap();
     make_repo(&dir.path().join("kept"));
     fs::write(
         &file,
-        format!("{}\n/gone\n# note\n", dir.path().join("kept").display()),
+        format!(
+            "repositories = [\"{}\", \"/gone\", \"# note\"]\n",
+            dir.path().join("kept").display()
+        ),
     )
     .unwrap();
 
-    let bare = nine_up(dir.path(), &["-b", b]);
+    let bare = nine_up(dir.path(), &["-C", b]);
     assert!(stdout(&bare).contains("kept"));
     assert!(stdout(&bare).contains("doesn't exist"));
     assert!(stdout(&bare).contains("note"));
 
-    let cleaned = nine_up(dir.path(), &["-b", b, "clean"]);
+    // Clean removes /gone but never a comment entry.
+    let cleaned = nine_up(dir.path(), &["-C", b, "clean"]);
     assert!(stdout(&cleaned).contains("Removed /gone."));
-    assert!(stdout(&cleaned).contains("Removed # note."));
+    assert!(!stdout(&cleaned).contains("Removed # note."));
     assert_eq!(
         fs::read_to_string(&file).unwrap(),
-        dir.path().join("kept").display().to_string()
+        format!(
+            "repositories = [\"{}\", \"# note\"]\n",
+            dir.path().join("kept").display()
+        )
     );
 
-    let again = nine_up(dir.path(), &["-b", b, "clean"]);
+    let listed = nine_up(dir.path(), &["-C", b, "list"]);
+    assert!(stdout(&listed).contains(&dir.path().join("kept").display().to_string()));
+    assert!(stdout(&listed).contains("# note"));
+
+    let again = nine_up(dir.path(), &["-C", b, "clean"]);
     assert!(stdout(&again).contains("Nothing to clean."));
 }
 
 #[test]
-fn no_bookmarks_prints_the_hint() {
+fn no_configured_paths_prints_the_hint() {
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("bookmarks");
-    let out = nine_up(dir.path(), &["-b", file.to_str().unwrap()]);
-    assert!(stdout(&out).contains("No bookmarks."));
+    let file = dir.path().join("config.toml");
+    let out = nine_up(dir.path(), &["-C", file.to_str().unwrap()]);
+    assert!(stdout(&out).contains("No repositories configured."));
 }
 
 #[test]
@@ -617,21 +636,24 @@ fn exec_runs_in_each_repository_and_ignores_the_exit_status() {
 #[test]
 fn exec_with_no_command_is_a_usage_error_and_touches_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("bookmarks");
-    fs::write(&file, "/somewhere").unwrap();
-    let out = nine_up(dir.path(), &["-b", file.to_str().unwrap(), "exec"]);
+    let file = dir.path().join("config.toml");
+    fs::write(&file, "repositories = [\"/somewhere\"]\n").unwrap();
+    let out = nine_up(dir.path(), &["-C", file.to_str().unwrap(), "exec"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(stdout(&out).is_empty(), "{}", stdout(&out));
-    assert_eq!(fs::read_to_string(&file).unwrap(), "/somewhere");
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "repositories = [\"/somewhere\"]\n"
+    );
 }
 
 #[test]
-fn exec_with_no_bookmarks_prints_nothing() {
+fn exec_with_no_configured_paths_prints_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("bookmarks");
+    let file = dir.path().join("config.toml");
     let out = nine_up(
         dir.path(),
-        &["-b", file.to_str().unwrap(), "exec", "--", "true"],
+        &["-C", file.to_str().unwrap(), "exec", "--", "true"],
     );
     assert_eq!(stdout(&out), "9up\n\n");
 }
@@ -743,15 +765,15 @@ fn list_survives_a_deleted_current_directory() {
     let dir = tempfile::tempdir().unwrap();
     let gone = dir.path().join("gone");
     fs::create_dir(&gone).unwrap();
-    let bookmarks = dir.path().join("bookmarks");
-    fs::write(&bookmarks, "/srv/repos").unwrap();
+    let config = dir.path().join("config.toml");
+    fs::write(&config, "repositories = [\"/srv/repos\"]\n").unwrap();
     // cd into a directory, delete it, then run: list needs no cwd.
     let script = format!(
-        "cd {} && rmdir {} && exec {} -b {} list",
+        "cd {} && rmdir {} && exec {} -C {} list",
         gone.display(),
         gone.display(),
         env!("CARGO_BIN_EXE_9up"),
-        bookmarks.display()
+        config.display()
     );
     let out = Command::new("sh")
         .args(["-c", &script])
@@ -916,7 +938,7 @@ fn exec_depth_limits_the_search() {
 }
 
 #[test]
-fn default_bookmark_path_ignores_relative_and_empty_xdg_config_home() {
+fn default_config_path_ignores_relative_and_empty_xdg_config_home() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().to_str().unwrap();
     // `dirs` follows the platform: the XDG path on Linux, Application
@@ -924,11 +946,11 @@ fn default_bookmark_path_ignores_relative_and_empty_xdg_config_home() {
     #[cfg(target_os = "macos")]
     let default_file = dir
         .path()
-        .join("Library/Application Support/gitup/bookmarks");
+        .join("Library/Application Support/9up/config.toml");
     #[cfg(not(target_os = "macos"))]
-    let default_file = dir.path().join(".config/gitup/bookmarks");
+    let default_file = dir.path().join(".config/9up/config.toml");
     fs::create_dir_all(default_file.parent().unwrap()).unwrap();
-    fs::write(&default_file, "/from-default\n").unwrap();
+    fs::write(&default_file, "repositories = [\"/from-default\"]\n").unwrap();
 
     for xdg in ["relative/path", ""] {
         let out = nine_up_env(
@@ -941,7 +963,126 @@ fn default_bookmark_path_ignores_relative_and_empty_xdg_config_home() {
             "XDG_CONFIG_HOME={xdg:?}: {}",
             stdout(&out)
         );
+        // An empty `-C` value uses the same default path.
+        let out = nine_up_env(
+            dir.path(),
+            &["-C", "", "list"],
+            &[("HOME", home), ("XDG_CONFIG_HOME", xdg)],
+        );
+        assert!(
+            stdout(&out).contains("/from-default"),
+            "XDG_CONFIG_HOME={xdg:?}: {}",
+            stdout(&out)
+        );
     }
+}
+
+#[test]
+fn a_toml_comment_and_an_unknown_key_survive_add_and_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("config.toml");
+    let b = file.to_str().unwrap();
+    fs::write(
+        &file,
+        "# my note\nother = 1\nrepositories = [\n    # first\n    \"/a\",\n]\n",
+    )
+    .unwrap();
+
+    let added = nine_up(dir.path(), &["-C", b, "add", "repo"]);
+    assert!(added.status.success(), "{}", stdout(&added));
+    let deleted = nine_up(dir.path(), &["-C", b, "delete", "repo"]);
+    assert!(deleted.status.success(), "{}", stdout(&deleted));
+
+    let text = fs::read_to_string(&file).unwrap();
+    assert!(text.contains("# my note"), "{text}");
+    assert!(text.contains("# first"), "{text}");
+    assert!(text.contains("other = 1"), "{text}");
+    let listed = nine_up(dir.path(), &["-C", b, "list"]);
+    assert_eq!(stdout(&listed), "9up\n\n/a\n");
+}
+
+#[test]
+fn delete_removes_only_the_first_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("config.toml");
+    let b = file.to_str().unwrap();
+    fs::write(&file, "repositories = [\"/a\", \"/b\", \"/a\"]\n").unwrap();
+
+    let deleted = nine_up(dir.path(), &["-C", b, "delete", "/a"]);
+    assert!(stdout(&deleted).contains("Deleted /a."));
+
+    let listed = nine_up(dir.path(), &["-C", b, "list"]);
+    assert_eq!(stdout(&listed), "9up\n\n/b\n/a\n");
+}
+
+#[test]
+fn a_no_op_delete_and_clean_leave_the_file_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("config.toml");
+    let b = file.to_str().unwrap();
+    // Non-canonical spacing: any rewrite of the file would show.
+    let text = format!(
+        "# heading\nrepositories = [\"{}\", \"# note\"]\n",
+        dir.path().display()
+    );
+    fs::write(&file, &text).unwrap();
+
+    let missing = nine_up(dir.path(), &["-C", b, "delete", "/missing"]);
+    assert!(stdout(&missing).contains("not in the config file"));
+    assert_eq!(fs::read_to_string(&file).unwrap(), text);
+
+    let cleaned = nine_up(dir.path(), &["-C", b, "clean"]);
+    assert!(stdout(&cleaned).contains("Nothing to clean."));
+    assert_eq!(fs::read_to_string(&file).unwrap(), text);
+}
+
+#[test]
+fn an_unparseable_config_fails_with_exit_1() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("config.toml");
+    let b = file.to_str().unwrap();
+    for text in [
+        "repositories = [\n",
+        "repositories = \"/a\"\n",
+        "repositories = [1]\n",
+    ] {
+        fs::write(&file, text).unwrap();
+        let out = nine_up(dir.path(), &["-C", b, "list"]);
+        assert_eq!(out.status.code(), Some(1), "{text}");
+        assert!(!out.stderr.is_empty(), "{text}");
+    }
+    fs::write(&file, [0xff, 0xfe]).unwrap();
+    let out = nine_up(dir.path(), &["-C", b, "list"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!out.stderr.is_empty());
+}
+
+#[test]
+fn a_missing_repositories_key_means_no_repositories() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("config.toml");
+    fs::write(&file, "other = 1\n").unwrap();
+    let out = nine_up(dir.path(), &["-C", file.to_str().unwrap(), "list"]);
+    assert!(out.status.success());
+    assert!(stdout(&out).contains("No repositories configured."));
+}
+
+#[test]
+fn a_gitup_bookmark_file_is_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().to_str().unwrap();
+    let old = dir.path().join(".config/gitup");
+    fs::create_dir_all(&old).unwrap();
+    fs::write(old.join("bookmarks"), "/from-gitup\n").unwrap();
+
+    let out = nine_up_env(
+        dir.path(),
+        &["list"],
+        &[("HOME", home), ("XDG_CONFIG_HOME", "")],
+    );
+    assert!(out.status.success());
+    assert!(stdout(&out).contains("No repositories configured."));
+    assert!(!stdout(&out).contains("/from-gitup"));
 }
 
 #[test]

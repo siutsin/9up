@@ -46,7 +46,7 @@ pub fn glob_paths(pattern: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Resolve one input (a command-line path or a bookmark) to the
+/// Resolve one input (a command-line path or a configured path) to the
 /// repositories under it, a comment, or a path error.
 pub fn resolve(input: &str, cwd: &Path, home: Option<&Path>, depth: i32) -> Resolved {
     if input.is_empty() {
@@ -105,7 +105,7 @@ pub fn resolve(input: &str, cwd: &Path, home: Option<&Path>, depth: i32) -> Reso
 
 /// The comment text of a missing path whose first non-space character is
 /// `#`, or None. An empty text is Some(""): it prints nothing.
-fn comment_text(input: &str) -> Option<String> {
+pub fn comment_text(input: &str) -> Option<String> {
     let trimmed = input.trim_start_matches(' ');
     if !trimmed.starts_with('#') {
         return None;
