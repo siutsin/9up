@@ -46,6 +46,7 @@ Run `mise install` for the non-Rust tools. Then check your change:
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+mise run coverage
 markdownlint-cli2 '**/*.md'
 ```
 

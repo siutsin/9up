@@ -1137,3 +1137,96 @@ fn exec_in_a_bare_repository_runs_in_the_repository_directory() {
     });
     assert!(printed, "{text}");
 }
+
+#[test]
+fn clean_with_no_configured_repositories_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("config.toml");
+    let b = file.to_str().unwrap();
+    let out = nine_up(dir.path(), &["-C", b, "clean"]);
+    assert!(out.status.success());
+    assert!(stdout(&out).contains("No repositories configured."));
+}
+
+#[test]
+fn update_with_a_lone_hash_entry_prints_nothing_for_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("config.toml");
+    fs::write(&file, "repositories = [\"#\"]\n").unwrap();
+    let b = file.to_str().unwrap();
+    let out = nine_up(dir.path(), &["-C", b]);
+    assert!(out.status.success(), "{}", stdout(&out));
+    assert!(!stdout(&out).contains('#'), "{}", stdout(&out));
+}
+
+#[test]
+fn exec_prints_comment_and_missing_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("config.toml");
+    fs::write(
+        &file,
+        "repositories = [\"# note\", \"/nonexistent-9up-test\"]\n",
+    )
+    .unwrap();
+    let b = file.to_str().unwrap();
+    let out = nine_up(dir.path(), &["-C", b, "exec", "--", "true"]);
+    assert!(out.status.success(), "{}", stdout(&out));
+    let text = stdout(&out);
+    assert!(text.contains("note"), "{text}");
+    assert!(text.contains("doesn't exist."), "{text}");
+}
+
+#[test]
+fn update_fails_from_a_deleted_current_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let gone = dir.path().join("gone");
+    fs::create_dir(&gone).unwrap();
+    let config = dir.path().join("config.toml");
+    fs::write(&config, "repositories = [\"/srv/repos\"]\n").unwrap();
+    let script = format!(
+        "cd {} && rmdir {} && exec {} -C {}",
+        gone.display(),
+        gone.display(),
+        env!("CARGO_BIN_EXE_9up"),
+        config.display()
+    );
+    let out = Command::new("sh")
+        .args(["-c", &script])
+        .env("HOME", dir.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("9up:"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_relative_config_path_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let added = nine_up(dir.path(), &["-C", "cfg.toml", "add", "repo"]);
+    assert!(added.status.success(), "{}", stdout(&added));
+    assert!(dir.path().join("cfg.toml").exists());
+    let listed = nine_up(dir.path(), &["-C", "cfg.toml", "list"]);
+    assert!(listed.status.success());
+    assert!(stdout(&listed).contains("repo"), "{}", stdout(&listed));
+}
+
+#[test]
+fn a_closed_stdout_still_exits_successfully() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    fs::write(&config, "repositories = [\"/srv/repos\"]\n").unwrap();
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let status = Command::new(env!("CARGO_BIN_EXE_9up"))
+        .args(["-C", config.to_str().unwrap()])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .stdout(writer)
+        .status()
+        .unwrap();
+    assert!(status.success());
+}

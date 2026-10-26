@@ -24,7 +24,7 @@ struct Cli {
     command: Option<Command>,
 }
 
-#[derive(Args)]
+#[derive(Args, Default)]
 struct UpdateArgs {
     /// Update the repositories under these paths. No paths means the configured repositories.
     paths: Vec<String>,
@@ -44,18 +44,6 @@ struct UpdateArgs {
     /// Search depth below each path. A negative value means no limit.
     #[arg(short = 't', long, default_value_t = 3, allow_negative_numbers = true)]
     depth: i32,
-}
-
-impl Default for UpdateArgs {
-    fn default() -> Self {
-        Self {
-            paths: Vec::new(),
-            current_only: false,
-            fetch_only: false,
-            prune: false,
-            depth: 3,
-        }
-    }
 }
 
 #[derive(Subcommand)]
@@ -221,7 +209,13 @@ fn run(app: &mut App, cli: &Cli) -> io::Result<ExitCode> {
         Some(Command::List) => list(app),
         Some(Command::Clean) => clean(app),
         Some(Command::Update(args)) => update(app, args),
-        None => update(app, &UpdateArgs::default()),
+        None => update(
+            app,
+            &UpdateArgs {
+                depth: 3,
+                ..Default::default()
+            },
+        ),
         Some(Command::Exec {
             paths,
             depth,
@@ -235,7 +229,7 @@ fn add(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
     let mut entries = config::load(&*app.sys, &app.config_file)?;
     for raw in paths {
         let normalized = config::normalize(raw, &app.cwd);
-        if config::has(&entries, &normalized) {
+        if entries.contains(&normalized) {
             writeln!(out, "{normalized} is already in the config file.")?;
         } else {
             writeln!(out, "Added {normalized}.")?;
@@ -726,6 +720,71 @@ mod tests {
         );
         assert!(text.contains("fatal: boom"), "{text}");
         assert!(text.contains("main: error: failed"), "{text}");
+    }
+
+    #[test]
+    fn a_bare_long_option_means_update() {
+        assert_eq!(
+            shim(&["9up", "--fetch-only"]),
+            ["9up", "update", "--fetch-only"]
+        );
+        assert_eq!(shim(&["9up", "--prune"]), ["9up", "update", "--prune"]);
+    }
+
+    #[test]
+    fn paint_wraps_the_text_in_the_codes_when_enabled() {
+        assert_eq!(paint(true, RED, "x"), format!("{RED}x{RESET}"));
+        assert_eq!(paint(false, RED, "x"), "x");
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let _ = buf;
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct SecondWriteFails {
+        writes: usize,
+    }
+
+    impl Write for SecondWriteFails {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            if self.writes > 1 {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed"));
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn print_header_reports_a_failed_write() {
+        let mut out = FailingWriter;
+        assert!(print_header(&mut out, false, "/x", None, Path::new("/"), 1).is_err());
+    }
+
+    #[test]
+    fn render_report_reports_a_failed_write() {
+        let report = update::Report {
+            name: "repo".to_owned(),
+            steps: vec![update::Step::Fetch {
+                remote: "empty".to_owned(),
+                outcome: update::FetchOutcome::NoRefspec,
+            }],
+        };
+        let mut out = SecondWriteFails { writes: 0 };
+        assert!(render_report(&report, false, &mut out).is_err());
     }
 
     #[test]
