@@ -4,7 +4,7 @@ twice, run Python gitup on one copy and 9up on the other, and compare
 the result: every reference and HEAD in every repository, the bookmark
 files, and the exit codes.
 
-Usage: scripts/parity-check.py <gitup-binary> <9up-binary>
+Usage: scripts/parity_check.py <gitup-binary> <9up-binary>
 """
 
 import os
