@@ -14,6 +14,17 @@ pub enum Step {
         remote: String,
         outcome: FetchOutcome,
     },
+    Branch {
+        name: String,
+        outcome: BranchOutcome,
+    },
+    Error(String),
+}
+
+pub enum BranchOutcome {
+    Updated { from: String, to: String },
+    UpToDate,
+    Skipped(String),
     Error(String),
 }
 
@@ -34,8 +45,6 @@ pub enum Kind {
 #[derive(Clone, Copy)]
 pub struct Options {
     pub current_only: bool,
-    // Read from the branch-step change on.
-    #[allow(dead_code)]
     pub fetch_only: bool,
     pub prune: bool,
 }
@@ -61,22 +70,28 @@ fn git_text(dir: &Path, argv: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-// Constructed from the branch-step change on.
-#[allow(dead_code)]
 pub struct RepoInfo {
+    // Part of the rev-parse pair the plan prescribes.
+    #[allow(dead_code)]
     pub git_dir: PathBuf,
+    // Read by exec_repo in Step 3.
+    #[allow(dead_code)]
     pub work_dir: PathBuf,
+    pub bare: bool,
 }
 
 /// Let git answer where the repository lives. A bare repository has no
 /// top level, so its working directory is the git directory.
-#[allow(dead_code)]
 pub fn repo_info(path: &Path) -> Option<RepoInfo> {
     let git_dir = PathBuf::from(git_text(path, &["rev-parse", "--absolute-git-dir"])?);
-    let work_dir = git_text(path, &["rev-parse", "--show-toplevel"])
-        .map(PathBuf::from)
-        .unwrap_or_else(|| git_dir.clone());
-    Some(RepoInfo { git_dir, work_dir })
+    let top = git_text(path, &["rev-parse", "--show-toplevel"]);
+    let bare = top.is_none();
+    let work_dir = top.map(PathBuf::from).unwrap_or_else(|| git_dir.clone());
+    Some(RepoInfo {
+        git_dir,
+        work_dir,
+        bare,
+    })
 }
 
 struct Remote {
@@ -173,12 +188,13 @@ pub fn update_repo(path: &Path, name: &str, options: &Options) -> Report {
                     return failed(name, "No remotes.");
                 }
                 // Not in the configuration at all: same outcome as a
-                // refspec-less remote, the fetch skip line.
+                // refspec-less remote, the fetch skip line. Not a
+                // repository error, so the branch step still runs.
                 report.steps.push(Step::Fetch {
                     remote: remote_name,
                     outcome: FetchOutcome::NoRefspec,
                 });
-                return report;
+                Vec::new()
             }
         }
     } else {
@@ -205,14 +221,159 @@ pub fn update_repo(path: &Path, name: &str, options: &Options) -> Report {
             break; // The first failed fetch stops this repository's fetches.
         }
     }
+    if !options.fetch_only {
+        let bare = repo_info(path).map(|info| info.bare).unwrap_or(false);
+        branch_step(path, &current_branch(path), bare, &mut report.steps);
+    }
     report
 }
 
+/// One branch from the snapshot: its name, its SHA, and the full
+/// reference of its upstream (empty when it has none).
+struct Branch {
+    name: String,
+    sha: String,
+    upstream: String,
+}
+
+fn branch_step(path: &Path, current: &Option<String>, bare: bool, steps: &mut Vec<Step>) {
+    let Some(text) = git_text(
+        path,
+        &[
+            "for-each-ref",
+            "--format=%(refname)%00%(objectname)%00%(upstream)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    ) else {
+        return;
+    };
+    let mut branches: Vec<Branch> = Vec::new();
+    let mut shas: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        let mut parts = line.split('\0');
+        let (Some(reference), Some(sha), upstream) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        shas.push((reference.to_owned(), sha.to_owned()));
+        if let Some(name) = reference.strip_prefix("refs/heads/") {
+            branches.push(Branch {
+                name: name.to_owned(),
+                sha: sha.to_owned(),
+                upstream: upstream.unwrap_or("").to_owned(),
+            });
+        }
+    }
+    for index in 0..branches.len() {
+        let branch = &branches[index];
+        if branch.upstream.is_empty() {
+            continue; // No upstream: skipped silently.
+        }
+        let Some(upstream_sha) = shas
+            .iter()
+            .find(|(reference, _)| *reference == branch.upstream)
+            .map(|(_, sha)| sha.clone())
+        else {
+            continue; // The upstream reference is missing locally.
+        };
+        let Some(base) = git_text(path, &["merge-base", &branch.sha, &upstream_sha]) else {
+            continue; // No merge base: skipped silently.
+        };
+        let name = branch.name.clone();
+        let upstream_ref = branch.upstream.clone();
+        if base == upstream_sha {
+            steps.push(Step::Branch {
+                name,
+                outcome: BranchOutcome::UpToDate,
+            });
+        } else if base != branch.sha {
+            steps.push(Step::Branch {
+                name,
+                outcome: BranchOutcome::Skipped("a fast-forward is not possible".to_owned()),
+            });
+        } else if !bare && current.as_deref() == Some(name.as_str()) {
+            match run(path, &["merge", "--ff-only", &upstream_ref]) {
+                Ok(output) if output.status.success() => {
+                    push_updated(steps, &branches, &mut shas, index, &upstream_sha);
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let reason = if stderr.contains("local changes")
+                        && stderr.contains("would be overwritten")
+                    {
+                        "uncommitted changes"
+                    } else {
+                        "merge failed"
+                    };
+                    steps.push(Step::Branch {
+                        name,
+                        outcome: BranchOutcome::Skipped(reason.to_owned()),
+                    });
+                }
+                Err(err) => steps.push(Step::Branch {
+                    name,
+                    outcome: BranchOutcome::Skipped(format!("Could not run git: {err}")),
+                }),
+            }
+        } else {
+            match run(path, &["branch", "-f", "--", &name, &upstream_ref]) {
+                Ok(output) if output.status.success() => {
+                    push_updated(steps, &branches, &mut shas, index, &upstream_sha);
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let line = stderr
+                        .lines()
+                        .map(str::trim)
+                        .find(|line| line.starts_with("error:") || line.starts_with("fatal:"))
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| {
+                            format!("git branch -f {name} failed: {}", output.status)
+                        });
+                    steps.push(Step::Branch {
+                        name,
+                        outcome: BranchOutcome::Error(line),
+                    });
+                }
+                Err(err) => steps.push(Step::Branch {
+                    name,
+                    outcome: BranchOutcome::Error(format!("Could not run git: {err}")),
+                }),
+            }
+        }
+    }
+}
+
+fn push_updated(
+    steps: &mut Vec<Step>,
+    branches: &[Branch],
+    shas: &mut [(String, String)],
+    index: usize,
+    upstream_sha: &str,
+) {
+    let branch = &branches[index];
+    // A later branch may track this one: its snapshot SHA moves too.
+    let reference = format!("refs/heads/{}", branch.name);
+    if let Some((_, sha)) = shas.iter_mut().find(|(r, _)| *r == reference) {
+        *sha = upstream_sha.to_owned();
+    }
+    steps.push(Step::Branch {
+        name: branch.name.clone(),
+        outcome: BranchOutcome::Updated {
+            from: branch.sha.clone(),
+            to: upstream_sha.to_owned(),
+        },
+    });
+}
+
 fn fetch(path: &Path, remote: &str, prune: bool) -> FetchOutcome {
-    let mut argv = vec!["fetch", "--porcelain", remote];
+    let mut argv = vec!["fetch", "--porcelain"];
     if prune {
         argv.push("--prune");
     }
+    argv.push("--");
+    argv.push(remote);
     let output = match run(path, &argv) {
         Ok(output) => output,
         Err(err) => return FetchOutcome::Error(vec![format!("Could not run git: {err}")]),

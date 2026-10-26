@@ -109,7 +109,9 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
      branch updates with `git merge --ff-only`. If the merge fails and its standard error holds both
      `local changes` and `would be overwritten`, the branch is skipped with the uncommitted-changes reason.
      If it fails for another reason, the branch is skipped with a plain failure reason. Any other branch
-     updates with `git branch -f`, and a failure shows an error.
+     updates with `git branch -f`, and a failure shows an error. In a bare repository there is no work
+     tree to merge into, so the current branch updates with `git branch -f` like any other (probed against
+     git 2.51: `git branch -f` on a bare repository's HEAD branch works).
    - A branch that cannot fast-forward is skipped, with the reason that a fast-forward is not possible.
 6. `exec` runs its command without a shell, in the repository's working directory. A bare repository has no
    working directory, so it uses the repository directory itself. The command's standard output prints

@@ -307,3 +307,264 @@ fn a_failed_fetch_stops_the_remaining_remotes() {
     assert!(!text.contains("Fetched upstream"), "{text}");
     assert!(!text.contains("upstream is up to date."), "{text}");
 }
+
+fn sha(dir: &Path, reference: &str) -> String {
+    let out = Command::new("git")
+        .args(["rev-parse", reference])
+        .current_dir(dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+#[test]
+fn branch_step_fast_forwards_and_skips() {
+    let dir = tempfile::tempdir().unwrap();
+    let remote = dir.path().join("remote.git");
+    git(
+        dir.path(),
+        &[
+            "init",
+            "-q",
+            "-b",
+            "main",
+            "--bare",
+            remote.to_str().unwrap(),
+        ],
+    );
+    let work = dir.path().join("work");
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    commit_file(&work, "a");
+    git(&work, &["push", "-q", "origin", "main"]);
+    git(&work, &["checkout", "-qb", "side"]);
+    commit_file(&work, "s");
+    git(&work, &["push", "-q", "origin", "side"]);
+    git(&work, &["checkout", "-qb", "diverged"]);
+    commit_file(&work, "d");
+    git(&work, &["push", "-q", "origin", "diverged"]);
+    git(&work, &["checkout", "-q", "main"]);
+
+    let stale = dir.path().join("stale");
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            stale.to_str().unwrap(),
+        ],
+    );
+    git(&stale, &["checkout", "-qb", "side", "origin/side"]);
+    git(&stale, &["checkout", "-qb", "diverged", "origin/diverged"]);
+    git(&stale, &["checkout", "-qb", "lonely"]);
+    commit_file(&stale, "mine");
+    git(&stale, &["checkout", "-q", "main"]);
+    // Diverge: a local commit on diverged that the remote never sees.
+    git(&stale, &["checkout", "-q", "diverged"]);
+    commit_file(&stale, "local-only");
+    git(&stale, &["checkout", "-q", "main"]);
+    let diverged_before = sha(&stale, "diverged");
+
+    git(&work, &["checkout", "-q", "main"]);
+    commit_file(&work, "b");
+    git(&work, &["push", "-q", "origin", "main"]);
+    git(&work, &["checkout", "-q", "side"]);
+    commit_file(&work, "s2");
+    git(&work, &["push", "-q", "origin", "side"]);
+    git(&work, &["checkout", "-q", "diverged"]);
+    commit_file(&work, "d2");
+    git(&work, &["push", "-q", "origin", "diverged"]);
+
+    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let text = stdout(&out);
+    assert!(text.contains("main updated:"), "{text}");
+    assert!(text.contains("side updated:"), "{text}");
+    assert!(
+        text.contains("diverged skipped: a fast-forward is not possible."),
+        "{text}"
+    );
+    assert!(!text.contains("lonely"), "{text}");
+    assert_eq!(sha(&stale, "main"), sha(&stale, "origin/main"));
+    assert_eq!(sha(&stale, "side"), sha(&stale, "origin/side"));
+    assert_eq!(sha(&stale, "diverged"), diverged_before);
+
+    let again = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    assert!(stdout(&again).contains("main is up to date."));
+}
+
+#[test]
+fn fetch_only_and_uncommitted_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let remote = dir.path().join("remote.git");
+    git(
+        dir.path(),
+        &[
+            "init",
+            "-q",
+            "-b",
+            "main",
+            "--bare",
+            remote.to_str().unwrap(),
+        ],
+    );
+    let work = dir.path().join("work");
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    commit_file(&work, "a");
+    git(&work, &["push", "-q", "origin", "main"]);
+
+    let stale = dir.path().join("stale");
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            stale.to_str().unwrap(),
+        ],
+    );
+    commit_file(&work, "b");
+    git(&work, &["push", "-q", "origin", "main"]);
+    let behind = sha(&stale, "main");
+
+    let fetched = nine_up(dir.path(), &["update", "-f", stale.to_str().unwrap()]);
+    assert!(
+        !stdout(&fetched).contains("main updated:"),
+        "{}",
+        stdout(&fetched)
+    );
+    assert_eq!(sha(&stale, "main"), behind);
+
+    // The incoming commit changes "a"; a dirty "a" blocks the merge.
+    fs::write(work.join("a"), "changed remotely").unwrap();
+    git(&work, &["add", "a"]);
+    git(&work, &["commit", "-qm", "change a"]);
+    git(&work, &["push", "-q", "origin", "main"]);
+    fs::write(stale.join("a"), "dirty locally").unwrap();
+    let blocked = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let text = stdout(&blocked);
+    assert!(
+        text.contains("main skipped: uncommitted changes."),
+        "{text}"
+    );
+    assert_eq!(sha(&stale, "main"), behind);
+}
+
+#[test]
+fn a_bare_repository_updates_its_head_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let remote = dir.path().join("remote.git");
+    git(
+        dir.path(),
+        &[
+            "init",
+            "-q",
+            "-b",
+            "main",
+            "--bare",
+            remote.to_str().unwrap(),
+        ],
+    );
+    let work = dir.path().join("work");
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    commit_file(&work, "a");
+    git(&work, &["push", "-q", "origin", "main"]);
+
+    let bare = dir.path().join("bare.git");
+    git(
+        dir.path(),
+        &["init", "-q", "-b", "main", "--bare", bare.to_str().unwrap()],
+    );
+    git(
+        &bare,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&bare, &["fetch", "-q", "origin"]);
+    git(&bare, &["branch", "main", "refs/remotes/origin/main"]);
+    git(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+
+    commit_file(&work, "b");
+    git(&work, &["push", "-q", "origin", "main"]);
+
+    let out = nine_up(dir.path(), &["update", bare.to_str().unwrap()]);
+    let text = stdout(&out);
+    assert!(text.contains("main updated:"), "{text}");
+    assert_eq!(sha(&bare, "main"), sha(&bare, "refs/remotes/origin/main"));
+}
+
+#[test]
+fn a_branch_tracking_a_local_branch_sees_its_move() {
+    let dir = tempfile::tempdir().unwrap();
+    let remote = dir.path().join("remote.git");
+    git(
+        dir.path(),
+        &[
+            "init",
+            "-q",
+            "-b",
+            "main",
+            "--bare",
+            remote.to_str().unwrap(),
+        ],
+    );
+    let work = dir.path().join("work");
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    commit_file(&work, "a");
+    git(&work, &["push", "-q", "origin", "main"]);
+
+    let stale = dir.path().join("stale");
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            stale.to_str().unwrap(),
+        ],
+    );
+    git(&stale, &["branch", "-m", "main", "a-main"]);
+    git(&stale, &["checkout", "-qb", "b-follow", "a-main"]);
+    git(&stale, &["branch", "--set-upstream-to=a-main", "b-follow"]);
+    git(&stale, &["checkout", "-q", "a-main"]);
+
+    commit_file(&work, "b");
+    git(&work, &["push", "-q", "origin", "main"]);
+
+    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let text = stdout(&out);
+    assert!(text.contains("a-main updated:"), "{text}");
+    assert!(text.contains("b-follow updated:"), "{text}");
+    assert_eq!(sha(&stale, "b-follow"), sha(&stale, "origin/main"));
+}

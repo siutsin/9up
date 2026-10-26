@@ -343,6 +343,21 @@ fn render_report(report: &update::Report, colour: bool, out: &mut impl Write) {
                     }
                 }
             },
+            update::Step::Branch { name, outcome } => match outcome {
+                update::BranchOutcome::Updated { from, to } => {
+                    let line = format!("{name} updated: {}..{}", &from[..7], &to[..7]);
+                    let _ = writeln!(out, "    {}", paint(colour, CYAN, &line));
+                }
+                update::BranchOutcome::UpToDate => {
+                    let _ = writeln!(out, "    {name} is up to date.");
+                }
+                update::BranchOutcome::Skipped(reason) => {
+                    red_line(out, colour, &format!("{name} skipped: {reason}."));
+                }
+                update::BranchOutcome::Error(message) => {
+                    red_line(out, colour, &format!("{name}: {message}"));
+                }
+            },
             update::Step::Error(message) => red_line(out, colour, message),
         }
     }
