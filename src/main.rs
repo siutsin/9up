@@ -1,8 +1,9 @@
 mod bookmarks;
+mod discover;
 
 use std::env;
 use std::ffi::OsString;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -39,6 +40,18 @@ struct UpdateArgs {
     /// Search depth below each path. A negative value means no limit.
     #[arg(short, long, default_value_t = 3, allow_negative_numbers = true)]
     depth: i32,
+}
+
+impl Default for UpdateArgs {
+    fn default() -> Self {
+        Self {
+            paths: Vec::new(),
+            current_only: false,
+            fetch_only: false,
+            prune: false,
+            depth: 3,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -162,8 +175,9 @@ fn run(cli: &Cli, out: &mut impl Write) -> io::Result<ExitCode> {
         Some(Command::Add { paths }) => add(&path, paths, out),
         Some(Command::Delete { paths }) => delete(&path, paths, out),
         Some(Command::List) => list(&path, out),
-        Some(Command::Clean) => todo!("clean arrives with discovery"),
-        Some(Command::Update(_)) | None => todo!("update arrives in step 2"),
+        Some(Command::Clean) => clean(&path, out),
+        Some(Command::Update(args)) => update(args, &path, out),
+        None => update(&UpdateArgs::default(), &path, out),
         Some(Command::Exec { .. }) => todo!("exec arrives in step 3"),
     }
 }
@@ -215,6 +229,93 @@ fn list(path: &Path, out: &mut impl Write) -> io::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+const BOLD_WHITE: &str = "\u{1b}[1;37m";
+const BOLD_GREEN: &str = "\u{1b}[1;32m";
+const RED: &str = "\u{1b}[31m";
+const RESET: &str = "\u{1b}[0m";
+
+fn paint(enabled: bool, code: &str, text: &str) -> String {
+    if enabled {
+        format!("{code}{text}{RESET}")
+    } else {
+        text.to_owned()
+    }
+}
+
+/// Step 1 renders discovery only. Step 2 replaces each name with a report.
+fn update(args: &UpdateArgs, bookmark_file: &Path, out: &mut impl Write) -> io::Result<ExitCode> {
+    let cwd = env::current_dir()?;
+    let inputs: Vec<String> = if args.paths.is_empty() {
+        let entries = bookmarks::load(bookmark_file);
+        if entries.is_empty() {
+            let _ = writeln!(out, "No bookmarks. Add one with `9up add <path>`.");
+            return Ok(ExitCode::SUCCESS);
+        }
+        entries
+    } else {
+        args.paths.clone()
+    };
+    let colour = io::stdout().is_terminal();
+    for input in &inputs {
+        match discover::resolve(input, &cwd, args.depth) {
+            discover::Resolved::Repos(repos) => {
+                let expanded = discover::expand_home(input);
+                let header = bookmarks::normalize(&expanded.display().to_string(), &cwd);
+                let count = repos.len();
+                let noun = if count == 1 {
+                    "repository"
+                } else {
+                    "repositories"
+                };
+                let _ = writeln!(
+                    out,
+                    "{} ({count} {noun})",
+                    paint(colour, BOLD_WHITE, &header)
+                );
+                for repo in &repos {
+                    let _ = writeln!(out, "  {}", paint(colour, BOLD_GREEN, &repo.name));
+                }
+            }
+            discover::Resolved::Comment(text) => {
+                if !text.is_empty() {
+                    let _ = writeln!(out, "{text}");
+                }
+            }
+            discover::Resolved::PathError(message) => {
+                let _ = writeln!(out, "{}", paint(colour, RED, &message));
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn clean(path: &Path, out: &mut impl Write) -> io::Result<ExitCode> {
+    let entries = bookmarks::load(path);
+    if entries.is_empty() {
+        let _ = writeln!(out, "No bookmarks.");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut kept = Vec::new();
+    let mut removed = false;
+    for entry in &entries {
+        let expanded = discover::expand_home(entry);
+        let live =
+            expanded.is_dir() || !discover::glob_paths(&expanded.display().to_string()).is_empty();
+        if live {
+            kept.push(entry.clone());
+        } else {
+            removed = true;
+            let _ = writeln!(out, "Removed {entry}.");
+        }
+    }
+    if removed {
+        bookmarks::save(path, &kept)?;
+    } else {
+        let _ = writeln!(out, "Nothing to clean.");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// The bookmark file for this run: the `-b` value, or the default path
 /// under the XDG config directory.
 fn bookmark_path(cli: &Cli) -> PathBuf {
@@ -224,19 +325,9 @@ fn bookmark_path(cli: &Cli) -> PathBuf {
     let config = env::var("XDG_CONFIG_HOME")
         .ok()
         .filter(|value| !value.is_empty())
-        .map(|value| expand_home(&value))
+        .map(|value| discover::expand_home(&value))
         .unwrap_or_else(|| home_dir().join(".config"));
     config.join("gitup").join("bookmarks")
-}
-
-fn expand_home(path: &str) -> PathBuf {
-    if path == "~" {
-        return home_dir();
-    }
-    if let Some(rest) = path.strip_prefix("~/") {
-        return home_dir().join(rest);
-    }
-    PathBuf::from(path)
 }
 
 fn home_dir() -> PathBuf {
