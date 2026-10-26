@@ -525,6 +525,7 @@ fn exec(app: &mut App, paths: &[String], depth: i32, command: &[String]) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn shim(args: &[&str]) -> Vec<String> {
         insert_update(args.iter().map(OsString::from).collect())
@@ -750,14 +751,13 @@ mod tests {
         }
     }
 
-    struct SecondWriteFails {
-        writes: usize,
-    }
+    /// A writer that refuses the fetch-skip line, so a render fails
+    /// midway rather than on its first line.
+    struct SkipLineRefusingWriter;
 
-    impl Write for SecondWriteFails {
+    impl Write for SkipLineRefusingWriter {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.writes += 1;
-            if self.writes > 1 {
+            if String::from_utf8_lossy(buf).contains("refspec") {
                 return Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed"));
             }
             Ok(buf.len())
@@ -775,6 +775,153 @@ mod tests {
     }
 
     #[test]
+    fn the_test_writers_flush_successfully() {
+        assert!(FailingWriter.flush().is_ok());
+        assert!(SkipLineRefusingWriter.flush().is_ok());
+    }
+
+    /// A system that serves one in-memory config file and answers
+    /// every git call with empty success.
+    struct MemorySys {
+        config: Vec<u8>,
+    }
+
+    impl crate::sys::Sys for MemorySys {
+        fn git(&self, _dir: &Path, _argv: &[&str]) -> io::Result<std::process::Output> {
+            Ok(std::process::Output {
+                status: std::os::unix::process::ExitStatusExt::from_raw(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+
+        fn read(&self, _path: &Path) -> io::Result<Vec<u8>> {
+            Ok(self.config.clone())
+        }
+    }
+
+    fn test_app<'a>(config: Vec<u8>, cwd: &Path, out: &'a mut (dyn Write + 'a)) -> App<'a> {
+        App {
+            sys: Box::new(MemorySys { config }),
+            cwd: cwd.to_path_buf(),
+            home: None,
+            config_file: cwd.join("config.toml"),
+            colour: false,
+            out,
+        }
+    }
+
+    fn fake_repo(dir: &Path) {
+        let git = dir.join(".git");
+        fs::create_dir_all(git.join("refs")).unwrap();
+        fs::create_dir_all(git.join("objects")).unwrap();
+        fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    }
+
+    #[test]
+    fn update_with_no_configured_repositories_prints_the_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut out: Vec<u8> = Vec::new();
+        let mut app = test_app(Vec::new(), dir.path(), &mut out);
+        let args = UpdateArgs {
+            paths: Vec::new(),
+            ..Default::default()
+        };
+        assert!(update(&mut app, &args).is_ok());
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("No repositories configured."), "{text}");
+    }
+
+    #[test]
+    fn update_reports_a_failed_hint_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut out = FailingWriter;
+        let mut app = test_app(Vec::new(), dir.path(), &mut out);
+        let args = UpdateArgs {
+            paths: Vec::new(),
+            ..Default::default()
+        };
+        assert!(update(&mut app, &args).is_err());
+    }
+
+    #[test]
+    fn update_a_repository_through_the_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        fake_repo(&repo);
+        let config = format!("repositories = [\"{}\"]\n", repo.display()).into_bytes();
+        let mut out: Vec<u8> = Vec::new();
+        let mut app = test_app(config, dir.path(), &mut out);
+        let args = UpdateArgs {
+            paths: Vec::new(),
+            ..Default::default()
+        };
+        assert!(update(&mut app, &args).is_ok());
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("(1 repository)"), "{text}");
+        assert!(text.contains("No remotes."), "{text}");
+    }
+
+    #[test]
+    fn update_reports_a_failed_header_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        fake_repo(&repo);
+        let config = format!("repositories = [\"{}\"]\n", repo.display()).into_bytes();
+        let mut out = FailingWriter;
+        let mut app = test_app(config, dir.path(), &mut out);
+        let args = UpdateArgs {
+            paths: Vec::new(),
+            ..Default::default()
+        };
+        assert!(update(&mut app, &args).is_err());
+    }
+
+    #[test]
+    fn exec_prints_a_missing_path_through_the_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = b"repositories = [\"/nonexistent-9up-test\"]\n".to_vec();
+        let mut out: Vec<u8> = Vec::new();
+        let mut app = test_app(config, dir.path(), &mut out);
+        assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_ok());
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("doesn't exist."), "{text}");
+    }
+
+    #[test]
+    fn exec_prints_nothing_for_an_empty_comment() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = b"repositories = [\"#\"]\n".to_vec();
+        let mut out: Vec<u8> = Vec::new();
+        let mut app = test_app(config, dir.path(), &mut out);
+        assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_ok());
+        assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
+    }
+
+    #[test]
+    fn exec_reports_a_failed_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = b"repositories = [\"/nonexistent-9up-test\"]\n".to_vec();
+        let mut out = FailingWriter;
+        let mut app = test_app(config, dir.path(), &mut out);
+        assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn exec_reports_a_failed_header_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        fake_repo(&repo);
+        let config = format!("repositories = [\"{}\"]\n", repo.display()).into_bytes();
+        let mut out = FailingWriter;
+        let mut app = test_app(config, dir.path(), &mut out);
+        assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_err());
+    }
+
+    #[test]
     fn render_report_reports_a_failed_write() {
         let report = update::Report {
             name: "repo".to_owned(),
@@ -783,7 +930,7 @@ mod tests {
                 outcome: update::FetchOutcome::NoRefspec,
             }],
         };
-        let mut out = SecondWriteFails { writes: 0 };
+        let mut out = SkipLineRefusingWriter;
         assert!(render_report(&report, false, &mut out).is_err());
     }
 

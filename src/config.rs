@@ -98,11 +98,7 @@ fn sync_array(array: &mut Array, entries: &[String]) {
         && let Some(comment) = line_comment(&trailing)
     {
         let rest = trailing[comment.len()..].to_owned();
-        array.set_trailing(if rest.is_empty() {
-            "\n".to_owned()
-        } else {
-            rest
-        });
+        array.set_trailing(rest);
         first_prefix = Some(format!("{comment}{}", append_prefix(array)));
     }
     let prefix = append_prefix(array);
@@ -387,6 +383,13 @@ mod tests {
     #[test]
     fn save_does_not_overwrite_a_file_it_cannot_read() {
         assert!(save(&DenyReadSys, Path::new("/x/config.toml"), &[]).is_err());
+    }
+
+    #[test]
+    fn the_deny_read_fixture_would_let_a_write_through() {
+        // The fixture's point: only its read fails, so the test above
+        // proves save stops at the read.
+        assert!(DenyReadSys.write(Path::new("/x"), b"").is_ok());
     }
 
     #[test]

@@ -828,6 +828,46 @@ mod tests {
     }
 
     #[test]
+    fn a_malformed_ref_line_is_skipped() {
+        let sys = BranchSys {
+            current: "main",
+            refs: "garbage-line\nrefs/heads/main\0\
+                1111111111111111111111111111111111111111\0refs/remotes/origin/main\n\
+                refs/remotes/origin/main\0\
+                2222222222222222222222222222222222222222\0\n",
+            refs_fail: false,
+            action: ActionStub::FailsSilently,
+        };
+        match branch_step(&branch_report(&sys)) {
+            Step::Branch {
+                outcome: BranchOutcome::Skipped(reason),
+                ..
+            } => assert_eq!(reason, "merge failed"),
+            _ => panic!("unexpected step"),
+        }
+    }
+
+    #[test]
+    fn a_full_update_with_a_succeeding_fetch_has_no_branch_steps() {
+        let sys = StubSys::new(FetchStub::Succeeds);
+        let options = Options {
+            current_only: false,
+            fetch_only: false,
+            prune: false,
+        };
+        let report = update_repo(&sys, Path::new("/repo"), "repo", &options);
+        match &report.steps[..] {
+            [
+                Step::Fetch {
+                    outcome: FetchOutcome::UpToDate,
+                    ..
+                },
+            ] => {}
+            steps => panic!("unexpected steps: {}", steps.len()),
+        }
+    }
+
+    #[test]
     fn a_failed_ref_snapshot_skips_the_branch_step_silently() {
         let sys = BranchSys {
             current: "main",
@@ -926,6 +966,12 @@ mod tests {
     fn parse_remotes_skips_lines_it_cannot_use() {
         let text = "no-separator\nbranch.main.remote origin\nremote.bare /srv/x.git\n";
         assert!(parse_remotes(text).is_empty());
+    }
+
+    #[test]
+    fn parse_fetch_output_skips_lines_without_fields() {
+        assert!(parse_fetch_output("garbage", "origin").is_empty());
+        assert!(parse_fetch_output("", "origin").is_empty());
     }
 
     #[test]

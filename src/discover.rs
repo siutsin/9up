@@ -260,6 +260,20 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "not repos")]
+    fn resolved_names_rejects_a_non_repository_result() {
+        resolved_names(&Resolved::Comment("x".to_owned()));
+    }
+
+    #[test]
+    fn a_repository_outside_the_header_takes_its_last_component() {
+        assert_eq!(
+            name_for(Path::new("/elsewhere/repo"), Path::new("/base")),
+            "repo"
+        );
+    }
+
+    #[test]
     fn a_repository_at_the_path() {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
