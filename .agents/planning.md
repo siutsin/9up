@@ -283,10 +283,10 @@ this plan states gets a plan update in the same pull request.
 | `.editorconfig` | Final newline, UTF-8, LF, trim trailing whitespace. Two-space indent for YAML and Markdown only. Rust follows `cargo fmt`. `*.md`: no trailing-whitespace trim, line length off. |
 | `.gitignore` | `/target/` and `/.scratchpad/`. |
 | `.github/workflows/lint.yaml` | Exists, with the `markdown` job. Step 1 adds the `rust` job. Details under CI Workflows. |
-| `.github/workflows/test.yaml` | One `test` job: `cargo test --locked` on `ubuntu-latest` and `macos-latest`. |
+| `.github/workflows/test.yaml` | A `test` job (`cargo test --locked` on `ubuntu-latest` and `macos-latest`) and a `coverage` job (`cargo llvm-cov --locked` on `ubuntu-latest`). |
 
 Already in place, unchanged unless a step says otherwise: `rust-toolchain.toml`, the `claude.yaml` and
-`zizmor.yaml` workflows, `mise.toml` (pins node, markdownlint and zizmor) and `.markdownlint-cli2.jsonc`.
+`zizmor.yaml` workflows, `mise.toml` (pins node, markdownlint, zizmor and cargo-llvm-cov) and `.markdownlint-cli2.jsonc`.
 `AGENTS.md` is updated (the Feature Spec is the reference; the verify line lists the four checks) and
 `README.md` is updated (Development lists the four checks; the credit says inspired by, not a port). The
 workflows, `mise.toml` and the markdownlint configuration are baseline: they stay, and the steps build on
@@ -351,7 +351,8 @@ the Rust jobs, each with `permissions: contents: read` and `persist-credentials:
 jobs run the Local Checks commands.
 
 - `lint.yaml` gains a `rust` job on `ubuntu-latest`: the format check and clippy.
-- `test.yaml` is new: one `test` job on `ubuntu-latest` and `macos-latest`, running `cargo test --locked`.
+- `test.yaml` is new: a `test` job on `ubuntu-latest` and `macos-latest` running `cargo test --locked`,
+  and a `coverage` job on `ubuntu-latest` running `cargo llvm-cov --locked`.
 
 Each Rust job installs the toolchain with `rustup` (no argument, so it reads `rust-toolchain.toml`), then uses
 `Swatinem/rust-cache` for the build cache. Actions are pinned to a full commit SHA, with the version in a
