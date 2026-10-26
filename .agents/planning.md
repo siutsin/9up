@@ -118,7 +118,7 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
    first, then its standard error, each split into lines the way `str::lines` splits. The command's exit
    status is ignored. A command that cannot start prints an error line. An `exec` with no command after
    `--` is a usage error (exit 2), and it runs before anything else, so it never touches the bookmark file.
-7. Every `git` child process runs through `run()` (see Git Backend), which pins the locale to English.
+7. Every `git` child process runs through the `Sys` seam (see Git Backend), which pins the locale to English.
    The skip reasons in item 5 match English git output, so the pin is part of the design, not an accident.
 8. Exit codes: 0 for a normal run, 2 for a usage error, and 1 when a bookmark write fails. A failed write
    also prints an error to standard error.
@@ -200,14 +200,9 @@ rules) because real `git` runs, its behaviour matches the git the user runs by h
 git's own words, which the user can search for.
 
 `git` must be on the `PATH` at version 2.41 or later. Porcelain output (machine-readable output that does not
-change between releases) only, and never the human progress output. Every call goes through one function:
-
-```rust
-fn run(dir: &Path, argv: &[&str]) -> io::Result<Output>
-```
-
-It runs with its working directory set to `dir`, `LC_ALL=C` and `LANGUAGE=C` in the environment, and a null
-standard input. No shell, anywhere.
+change between releases) only, and never the human progress output. Every call goes through the `Sys`
+seam (see Module Breakdown): `RealSys::git`, with its working directory set to `dir`, `LC_ALL=C` and
+`LANGUAGE=C` in the environment, and a null standard input. No shell, anywhere.
 
 ### Git Commands Per Repository
 
@@ -368,15 +363,19 @@ comment.
 
 ## Module Breakdown
 
-Four files in `src/`, a flat crate, no `lib.rs`. `main` resolves the bookmark path (through `dirs`) and
-passes paths down. No file reads the environment directly for paths.
+Five files in `src/`, a flat crate, no `lib.rs`. The architecture is a composition root (owner's
+direction, 26 Oct 2026): `main` builds one `App` context in `sys.rs` — the `Sys` services, the working
+directory, the home directory, the bookmark file, the colour flag and the output — and passes it down.
+Nothing below `main` reads the environment, calls `dirs`, or builds a service. Path probes (metadata,
+the `.git` layout, the `walkdir` search) work on path values and need no service.
 
 | File | Estimated lines | Contents |
 | --- | --- | --- |
-| `main.rs` | ~230 | `Cli` and the command enum, dispatch, banner, colour, path headers, and rendering of every report. The only file that writes output, apart from the usage error. |
+| `main.rs` | ~230 | `Cli` and the command enum, the composition root, dispatch, banner, path headers, and rendering of every report. The only file that writes output, apart from the usage error. |
+| `sys.rs` | ~70 | The `App` context, the `Sys` trait (git, exec, file read/write) and `RealSys`. Tests substitute a stub `Sys` to force failures. |
 | `bookmarks.rs` | ~80 | `load`, `save`, `normalize`, `has`. No output. |
 | `discover.rs` | ~100 | `expand_home`, `glob_paths`, `resolve` and the depth-limited search. No `git` calls. |
-| `update.rs` | ~260 | `run` (the one child-process choke point), `repo_info`, `update_repo`, `exec_repo`. No output. |
+| `update.rs` | ~260 | `repo_info`, `update_repo`, `exec_repo`, all over the `Sys` seam. No output. |
 
 ### Types
 

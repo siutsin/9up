@@ -1,14 +1,15 @@
-use std::fs;
 use std::io;
 use std::path::Path;
+
+use crate::sys::Sys;
 
 /// The bookmark file's entries, in file order.
 ///
 /// A missing or unreadable file means no bookmarks. Lines are trimmed and
 /// empty lines dropped. Invalid UTF-8 becomes the replacement character,
 /// and the next save stores the replaced text.
-pub fn load(path: &Path) -> Vec<String> {
-    let Ok(bytes) = fs::read(path) else {
+pub fn load(sys: &dyn Sys, path: &Path) -> Vec<String> {
+    let Ok(bytes) = sys.read(path) else {
         return Vec::new();
     };
     String::from_utf8_lossy(&bytes)
@@ -20,11 +21,8 @@ pub fn load(path: &Path) -> Vec<String> {
 }
 
 /// Write the entries, one per line, with no final newline.
-pub fn save(path: &Path, entries: &[String]) -> io::Result<()> {
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, entries.join("\n"))
+pub fn save(sys: &dyn Sys, path: &Path, entries: &[String]) -> io::Result<()> {
+    sys.write(path, entries.join("\n").as_bytes())
 }
 
 pub fn has(entries: &[String], normalized: &str) -> bool {
@@ -66,9 +64,32 @@ pub fn normalize(path: &str, cwd: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sys::RealSys;
+    use std::fs;
 
     fn cwd() -> &'static Path {
         Path::new("/work")
+    }
+
+    /// A system with one in-memory file and a failing write. The
+    /// file's path does not exist on disk, so a passing read proves
+    /// the call went through the seam.
+    struct MemorySys;
+
+    impl Sys for MemorySys {
+        fn read(&self, _path: &Path) -> io::Result<Vec<u8>> {
+            Ok(b" /a \n".to_vec())
+        }
+
+        fn write(&self, _path: &Path, _contents: &[u8]) -> io::Result<()> {
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"))
+        }
+    }
+
+    #[test]
+    fn load_reads_through_the_seam_and_a_failed_write_is_an_error() {
+        assert_eq!(load(&MemorySys, Path::new("/x/bookmarks")), ["/a"]);
+        assert!(save(&MemorySys, Path::new("/x/bookmarks"), &["/a".to_owned()]).is_err());
     }
 
     #[test]
@@ -97,12 +118,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("bookmarks");
         fs::write(&file, " /a \n\n# note\n/b\n").unwrap();
-        assert_eq!(load(&file), ["/a", "# note", "/b"]);
+        assert_eq!(load(&RealSys, &file), ["/a", "# note", "/b"]);
     }
 
     #[test]
     fn load_of_a_missing_file_is_empty() {
-        assert!(load(Path::new("/nonexistent/bookmarks")).is_empty());
+        assert!(load(&RealSys, Path::new("/nonexistent/bookmarks")).is_empty());
     }
 
     #[test]
@@ -110,8 +131,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("deep/bookmarks");
         let entries = vec!["/a".to_owned(), "/b".to_owned()];
-        save(&file, &entries).unwrap();
+        save(&RealSys, &file, &entries).unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "/a\n/b");
-        assert_eq!(load(&file), entries);
+        assert_eq!(load(&RealSys, &file), entries);
     }
 }

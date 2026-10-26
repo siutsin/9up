@@ -15,13 +15,14 @@ pub enum Resolved {
     PathError(String),
 }
 
-/// Expand a leading `~` or `~/` to the home directory.
-pub fn expand_home(path: &str) -> PathBuf {
-    let Some(home) = dirs::home_dir() else {
+/// Expand a leading `~` or `~/` to the home directory. With no home
+/// directory the path is returned as given.
+pub fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
+    let Some(home) = home else {
         return PathBuf::from(path);
     };
     if path == "~" {
-        return home;
+        return home.to_path_buf();
     }
     if let Some(rest) = path.strip_prefix("~/") {
         return home.join(rest);
@@ -47,11 +48,11 @@ pub fn glob_paths(pattern: &str) -> Vec<PathBuf> {
 
 /// Resolve one input (a command-line path or a bookmark) to the
 /// repositories under it, a comment, or a path error.
-pub fn resolve(input: &str, cwd: &Path, depth: i32) -> Resolved {
+pub fn resolve(input: &str, cwd: &Path, home: Option<&Path>, depth: i32) -> Resolved {
     if input.is_empty() {
         return Resolved::PathError(format!("{input} doesn't exist."));
     }
-    let expanded = expand_home(input);
+    let expanded = expand_home(input, home);
     let display = expanded.display().to_string();
     // All filesystem work goes through the absolute form. `expanded`
     // stays as typed for the path errors, which name the given path.
@@ -239,12 +240,21 @@ mod tests {
     }
 
     #[test]
+    fn expand_home_uses_the_given_home() {
+        assert_eq!(
+            expand_home("~/x", Some(Path::new("/home/a"))),
+            PathBuf::from("/home/a/x")
+        );
+        assert_eq!(expand_home("~/x", None), PathBuf::from("~/x"));
+    }
+
+    #[test]
     fn a_repository_at_the_path() {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         fs::create_dir_all(&repo).unwrap();
         fake_repo(&repo);
-        let resolved = resolve(repo.to_str().unwrap(), dir.path(), 3);
+        let resolved = resolve(repo.to_str().unwrap(), dir.path(), None, 3);
         assert_eq!(resolved_names(&resolved), ["repo"]);
     }
 
@@ -255,11 +265,14 @@ mod tests {
         fs::create_dir_all(&deep).unwrap();
         fake_repo(&deep);
         let base = dir.path().to_str().unwrap().to_owned();
-        assert!(resolved_names(&resolve(&base, dir.path(), 1)).is_empty());
-        assert!(resolved_names(&resolve(&base, dir.path(), 2)).is_empty());
-        assert_eq!(resolved_names(&resolve(&base, dir.path(), 3)), ["a/b/repo"]);
+        assert!(resolved_names(&resolve(&base, dir.path(), None, 1)).is_empty());
+        assert!(resolved_names(&resolve(&base, dir.path(), None, 2)).is_empty());
         assert_eq!(
-            resolved_names(&resolve(&base, dir.path(), -1)),
+            resolved_names(&resolve(&base, dir.path(), None, 3)),
+            ["a/b/repo"]
+        );
+        assert_eq!(
+            resolved_names(&resolve(&base, dir.path(), None, -1)),
             ["a/b/repo"]
         );
     }
@@ -270,12 +283,15 @@ mod tests {
         let deep = dir.path().join("base/a/repo");
         fs::create_dir_all(&deep).unwrap();
         fake_repo(&deep);
-        assert_eq!(resolved_names(&resolve("base", dir.path(), 3)), ["a/repo"]);
+        assert_eq!(
+            resolved_names(&resolve("base", dir.path(), None, 3)),
+            ["a/repo"]
+        );
         let solo = dir.path().join("solo");
         fs::create_dir_all(&solo).unwrap();
         fake_repo(&solo);
         // "." from inside the repository names it by its directory.
-        assert_eq!(resolved_names(&resolve(".", &solo, 3)), ["solo"]);
+        assert_eq!(resolved_names(&resolve(".", &solo, None, 3)), ["solo"]);
     }
 
     #[test]
@@ -286,7 +302,7 @@ mod tests {
         fs::create_dir_all(bare.join("refs")).unwrap();
         fs::write(bare.join("HEAD"), "ref: refs/heads/main\n").unwrap();
         assert_eq!(
-            resolved_names(&resolve(bare.to_str().unwrap(), dir.path(), 3)),
+            resolved_names(&resolve(bare.to_str().unwrap(), dir.path(), None, 3)),
             ["bare.git"]
         );
 
@@ -298,7 +314,7 @@ mod tests {
         fs::create_dir_all(&work).unwrap();
         fs::write(work.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
         assert_eq!(
-            resolved_names(&resolve(work.to_str().unwrap(), dir.path(), 3)),
+            resolved_names(&resolve(work.to_str().unwrap(), dir.path(), None, 3)),
             ["work"]
         );
     }
@@ -306,17 +322,17 @@ mod tests {
     #[test]
     fn comments_errors_and_missing_paths() {
         let dir = tempfile::tempdir().unwrap();
-        match resolve("#  hello ", dir.path(), 3) {
+        match resolve("#  hello ", dir.path(), None, 3) {
             Resolved::Comment(text) => assert_eq!(text, "hello"),
             _ => panic!("not a comment"),
         }
-        match resolve("/nonexistent-9up-test", dir.path(), 3) {
+        match resolve("/nonexistent-9up-test", dir.path(), None, 3) {
             Resolved::PathError(_) => {}
             _ => panic!("not an error"),
         }
         let file = dir.path().join("file");
         fs::write(&file, "x").unwrap();
-        match resolve(file.to_str().unwrap(), dir.path(), 3) {
+        match resolve(file.to_str().unwrap(), dir.path(), None, 3) {
             Resolved::PathError(message) => assert!(message.contains("isn't a repository")),
             _ => panic!("not an error"),
         }
@@ -332,14 +348,14 @@ mod tests {
         }
         let pattern = format!("{}/*", dir.path().display());
         assert_eq!(
-            resolved_names(&resolve(&pattern, dir.path(), 3)),
+            resolved_names(&resolve(&pattern, dir.path(), None, 3)),
             ["one", "two"]
         );
         let dot = dir.path().join(".hidden");
         fs::create_dir_all(&dot).unwrap();
         fake_repo(&dot);
         assert_eq!(
-            resolved_names(&resolve(&pattern, dir.path(), 3)),
+            resolved_names(&resolve(&pattern, dir.path(), None, 3)),
             ["one", "two"]
         );
     }
