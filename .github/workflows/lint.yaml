@@ -8,12 +8,12 @@ on:
     branches:
       - master
 
+permissions:
+  contents: read
+
 jobs:
   markdown:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
 
     steps:
       - name: Clone the code
@@ -28,3 +28,25 @@ jobs:
 
       - name: Run markdown lint
         run: markdownlint-cli2 '**/*.md'
+
+  rust:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the toolchain
+        run: rustup toolchain install
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      - name: Check the format
+        run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
