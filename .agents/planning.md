@@ -146,8 +146,8 @@ or empty. The variable is `~` expanded. `-b ""` also uses the default path.
   replaces the whole file, in the original order, with comments in place.
 - A bookmark is stored as its absolute path, normalised without a filesystem access: duplicate separators
   collapse, `.` parts drop, `..` parts resolve against the parts before them, and a trailing separator drops.
-  A path that starts with `~` keeps it and is only normalised lexically. An empty path becomes the current
-  directory.
+  A leading `~` (alone or as `~/`) keeps it, and the path is only normalised lexically. An empty path
+  becomes the current directory.
 - A relative `add` value resolves against the current directory first. An added path does not need to exist.
 - Add reports each path as added or already bookmarked, and always writes. In `add x x`, the second `x` is
   already bookmarked.
@@ -321,8 +321,9 @@ markdownlint-cli2 '**/*.md'
 
 - Derive API. `Cli` is a `Parser` struct with the global bookmark-file option and an optional subcommand.
   The commands are a `Subcommand` enum: `Update`, `Add`, `Delete`, `List`, `Clean`, `Exec`.
-- The bare form: `Cli` also flattens the update arguments and sets `args_conflicts_with_subcommands`, so
-  `9up [paths...]` parses as an update.
+- The bare form is an argv shim in `main`: when the first positional argument is not a command name,
+  `update` is inserted after the program name before clap parses. A flattened update struct cannot do
+  this, because its path list swallows the command name as a path.
 - The binary name comes from `#[command(name = "9up")]`, because the package name is `nine-up`. Help and
   version use clap's built-in flags, so `--version` prints `9up <version>` from the name alone.
 - `update`'s `--depth` needs `allow_negative_numbers`, or clap reads `-1` as a flag. `exec` shares the

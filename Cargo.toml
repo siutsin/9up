@@ -7,6 +7,12 @@ edition = "2024"
 name = "9up"
 path = "src/main.rs"
 
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+
 [lints.rust]
 unsafe_code = "forbid"
 
