@@ -229,7 +229,8 @@ otherwise.
 
 ### Dependencies
 
-Four crates, plus one for tests. The standard library covers the rest.
+Four crates, plus one for tests. The standard library covers the rest. Every version is pinned exactly (`=` in `Cargo.toml`), so each
+update arrives as a Renovate pull request instead of drifting inside a range.
 
 | Crate | Use |
 | --- | --- |
