@@ -7,4 +7,4 @@ node = "24.22.1"
 # The coverage gate, run by CI and by hand: every production function
 # must be covered in full by one test run; test code does not count.
 [tasks.coverage]
-run = "cargo llvm-cov --locked && python3 scripts/coverage_gate.py"
+run = "cargo llvm-cov --locked && cargo run --quiet --locked --manifest-path xtask/Cargo.toml --target-dir target/xtask"
