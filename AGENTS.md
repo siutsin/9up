@@ -12,7 +12,7 @@ Coverage is a gate: `mise run coverage` fails below 97% of lines (the task and t
 1. The Feature Spec in `.agents/planning.md` is the reference for what 9up does. `gitup` is the inspiration,
    not the spec. The CLI details and the output wording are 9up's own. A difference from `gitup` that is not
    in the plan's Differences table needs a row there first.
-2. `update_repo` and `exec_repo` return data. Only `main.rs` writes output.
+2. `update_repo` and `exec_repo` return data. Only the front end (`main`, `commands`, `render`) writes output.
 3. Start every git child process through the `Sys` seam (`RealSys::git` in `sys.rs`). The user's command
    in `exec_repo` goes through `Sys::exec`: the same discipline (no shell, null stdin, explicit directory).
 4. Everything is built in `main` and passed down in the `App` context: no environment reads, `dirs` calls

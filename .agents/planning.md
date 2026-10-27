@@ -386,7 +386,7 @@ comment.
 
 ## Module Breakdown
 
-Five files in `src/`, a flat crate, no `lib.rs`. The architecture is a composition root (owner's
+Eight files in `src/`, a flat crate, no `lib.rs`. The architecture is a composition root (owner's
 direction, 26 Oct 2026): `main` builds one `App` context in `sys.rs` — the `Sys` services, the working
 directory, the home directory, the config file (the `config_file` field, renamed from `bookmark_file`),
 the colour flag and the output — and passes it down.
@@ -395,7 +395,10 @@ the `.git` layout, the `walkdir` search) work on path values and need no service
 
 | File | Estimated lines | Contents |
 | --- | --- | --- |
-| `main.rs` | ~230 | `Cli` and the command enum, the composition root, dispatch, banner, path headers, and rendering of every report. The only file that writes output, apart from the usage error. |
+| `main.rs` | ~85 | The composition root and dispatch. Builds the `App` and hands each command to `commands`. |
+| `cli.rs` | ~140 | `Cli`, `UpdateArgs`, the command enum and the bare-path argv shim. |
+| `commands.rs` | ~165 | The add, delete, list, clean, update and exec flows, and the repository walk they share. Writes through the `App` output. |
+| `render.rs` | ~105 | `paint`, the path headers, and rendering of every report. |
 | `sys.rs` | ~70 | The `App` context, the `Sys` trait (git, exec, file read/write) and `RealSys`. Tests substitute a stub `Sys` to force failures. |
 | `config.rs` | ~90 | The config file's entries, plus `load`, `save`, `normalize`, `has`. No output. |
 | `discover.rs` | ~100 | `expand_home`, `glob_paths`, `resolve` and the depth-limited search. No `git` calls. |
