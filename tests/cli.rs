@@ -25,15 +25,45 @@ fn nine_up_env(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     command.output().unwrap()
 }
 
+/// A temp directory and the config file inside it, in both forms
+/// the tests use: the path, and its text for `-C`.
+fn temp_config() -> (tempfile::TempDir, std::path::PathBuf, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("config.toml");
+    let text = file.to_str().unwrap().to_owned();
+    (dir, file, text)
+}
+
+/// Run the binary with the given trailing arguments from a current
+/// directory that no longer exists, and return its output. The config
+/// names one repository, `/srv/repos`.
+fn run_from_deleted_cwd(dir: &Path, suffix: &str) -> Output {
+    let gone = dir.join("gone");
+    fs::create_dir(&gone).unwrap();
+    let config = dir.join("config.toml");
+    fs::write(&config, "repositories = [\"/srv/repos\"]\n").unwrap();
+    let script = format!(
+        "cd {} && rmdir {} && exec {} -C {} {suffix}",
+        gone.display(),
+        gone.display(),
+        env!("CARGO_BIN_EXE_9up"),
+        config.display()
+    );
+    Command::new("sh")
+        .args(["-c", &script])
+        .env("HOME", dir)
+        .output()
+        .unwrap()
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 #[test]
 fn add_list_and_delete_round_trip() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("config.toml");
-    let b = file.to_str().unwrap();
+    let (dir, file, text) = temp_config();
+    let b = text.as_str();
     // getcwd resolves symlinks and macOS puts the temp dir behind /var, so canonicalise to match the stored path.
     let repo = fs::canonicalize(dir.path()).unwrap().join("repo");
     let repo = repo.display().to_string();
@@ -113,9 +143,8 @@ fn discovery_prints_headers_and_names() {
 
 #[test]
 fn bare_run_uses_the_configured_paths_and_clean_prunes_them() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("config.toml");
-    let b = file.to_str().unwrap();
+    let (dir, file, text) = temp_config();
+    let b = text.as_str();
     make_repo(&dir.path().join("kept"));
     fs::write(
         &file,
@@ -153,8 +182,7 @@ fn bare_run_uses_the_configured_paths_and_clean_prunes_them() {
 
 #[test]
 fn no_configured_paths_prints_the_hint() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("config.toml");
+    let (dir, file, _) = temp_config();
     let out = nine_up(dir.path(), &["-C", file.to_str().unwrap()]);
     assert!(stdout(&out).contains("No repositories configured."));
 }
@@ -162,42 +190,7 @@ fn no_configured_paths_prints_the_hint() {
 #[test]
 fn update_reports_what_a_fetch_brought_in() {
     let dir = tempfile::tempdir().unwrap();
-    let remote = dir.path().join("remote.git");
-    git(
-        dir.path(),
-        &[
-            "init",
-            "-q",
-            "-b",
-            "main",
-            "--bare",
-            remote.to_str().unwrap(),
-        ],
-    );
-
-    let work = dir.path().join("work");
-    git(
-        dir.path(),
-        &[
-            "clone",
-            "-q",
-            remote.to_str().unwrap(),
-            work.to_str().unwrap(),
-        ],
-    );
-    commit_file(&work, "a");
-    git(&work, &["push", "-q", "origin", "main"]);
-
-    let stale = dir.path().join("stale");
-    git(
-        dir.path(),
-        &[
-            "clone",
-            "-q",
-            remote.to_str().unwrap(),
-            stale.to_str().unwrap(),
-        ],
-    );
+    let (_remote, work, stale) = remote_work_stale(dir.path());
 
     git(&work, &["checkout", "-qb", "feat"]);
     commit_file(&work, "b");
@@ -221,41 +214,7 @@ fn update_reports_what_a_fetch_brought_in() {
 #[test]
 fn two_remotes_both_fetch_and_a_refspec_less_remote_is_skipped() {
     let dir = tempfile::tempdir().unwrap();
-    let remote = dir.path().join("remote.git");
-    git(
-        dir.path(),
-        &[
-            "init",
-            "-q",
-            "-b",
-            "main",
-            "--bare",
-            remote.to_str().unwrap(),
-        ],
-    );
-    let work = dir.path().join("work");
-    git(
-        dir.path(),
-        &[
-            "clone",
-            "-q",
-            remote.to_str().unwrap(),
-            work.to_str().unwrap(),
-        ],
-    );
-    commit_file(&work, "a");
-    git(&work, &["push", "-q", "origin", "main"]);
-
-    let stale = dir.path().join("stale");
-    git(
-        dir.path(),
-        &[
-            "clone",
-            "-q",
-            remote.to_str().unwrap(),
-            stale.to_str().unwrap(),
-        ],
-    );
+    let (remote, work, stale) = remote_work_stale(dir.path());
     git(
         &stale,
         &["remote", "add", "upstream", remote.to_str().unwrap()],
@@ -288,41 +247,7 @@ fn two_remotes_both_fetch_and_a_refspec_less_remote_is_skipped() {
 #[test]
 fn a_failed_fetch_stops_the_remaining_remotes() {
     let dir = tempfile::tempdir().unwrap();
-    let remote = dir.path().join("remote.git");
-    git(
-        dir.path(),
-        &[
-            "init",
-            "-q",
-            "-b",
-            "main",
-            "--bare",
-            remote.to_str().unwrap(),
-        ],
-    );
-    let work = dir.path().join("work");
-    git(
-        dir.path(),
-        &[
-            "clone",
-            "-q",
-            remote.to_str().unwrap(),
-            work.to_str().unwrap(),
-        ],
-    );
-    commit_file(&work, "a");
-    git(&work, &["push", "-q", "origin", "main"]);
-
-    let stale = dir.path().join("stale");
-    git(
-        dir.path(),
-        &[
-            "clone",
-            "-q",
-            remote.to_str().unwrap(),
-            stale.to_str().unwrap(),
-        ],
-    );
+    let (remote, _work, stale) = remote_work_stale(dir.path());
     git(
         &stale,
         &["remote", "add", "upstream", remote.to_str().unwrap()],
@@ -352,30 +277,7 @@ fn sha(dir: &Path, reference: &str) -> String {
 #[test]
 fn branch_step_fast_forwards_and_skips() {
     let dir = tempfile::tempdir().unwrap();
-    let remote = dir.path().join("remote.git");
-    git(
-        dir.path(),
-        &[
-            "init",
-            "-q",
-            "-b",
-            "main",
-            "--bare",
-            remote.to_str().unwrap(),
-        ],
-    );
-    let work = dir.path().join("work");
-    git(
-        dir.path(),
-        &[
-            "clone",
-            "-q",
-            remote.to_str().unwrap(),
-            work.to_str().unwrap(),
-        ],
-    );
-    commit_file(&work, "a");
-    git(&work, &["push", "-q", "origin", "main"]);
+    let (_remote, work, stale) = remote_work_stale(dir.path());
     git(&work, &["checkout", "-qb", "side"]);
     commit_file(&work, "s");
     git(&work, &["push", "-q", "origin", "side"]);
@@ -384,16 +286,7 @@ fn branch_step_fast_forwards_and_skips() {
     git(&work, &["push", "-q", "origin", "diverged"]);
     git(&work, &["checkout", "-q", "main"]);
 
-    let stale = dir.path().join("stale");
-    git(
-        dir.path(),
-        &[
-            "clone",
-            "-q",
-            remote.to_str().unwrap(),
-            stale.to_str().unwrap(),
-        ],
-    );
+    git(&stale, &["fetch", "-q", "origin"]);
     git(&stale, &["checkout", "-qb", "side", "origin/side"]);
     git(&stale, &["checkout", "-qb", "diverged", "origin/diverged"]);
     git(&stale, &["checkout", "-qb", "lonely"]);
@@ -435,41 +328,7 @@ fn branch_step_fast_forwards_and_skips() {
 #[test]
 fn fetch_only_and_uncommitted_changes() {
     let dir = tempfile::tempdir().unwrap();
-    let remote = dir.path().join("remote.git");
-    git(
-        dir.path(),
-        &[
-            "init",
-            "-q",
-            "-b",
-            "main",
-            "--bare",
-            remote.to_str().unwrap(),
-        ],
-    );
-    let work = dir.path().join("work");
-    git(
-        dir.path(),
-        &[
-            "clone",
-            "-q",
-            remote.to_str().unwrap(),
-            work.to_str().unwrap(),
-        ],
-    );
-    commit_file(&work, "a");
-    git(&work, &["push", "-q", "origin", "main"]);
-
-    let stale = dir.path().join("stale");
-    git(
-        dir.path(),
-        &[
-            "clone",
-            "-q",
-            remote.to_str().unwrap(),
-            stale.to_str().unwrap(),
-        ],
-    );
+    let (_remote, work, stale) = remote_work_stale(dir.path());
     commit_file(&work, "b");
     git(&work, &["push", "-q", "origin", "main"]);
     let behind = sha(&stale, "main");
@@ -500,30 +359,7 @@ fn fetch_only_and_uncommitted_changes() {
 #[test]
 fn a_bare_repository_updates_its_head_branch() {
     let dir = tempfile::tempdir().unwrap();
-    let remote = dir.path().join("remote.git");
-    git(
-        dir.path(),
-        &[
-            "init",
-            "-q",
-            "-b",
-            "main",
-            "--bare",
-            remote.to_str().unwrap(),
-        ],
-    );
-    let work = dir.path().join("work");
-    git(
-        dir.path(),
-        &[
-            "clone",
-            "-q",
-            remote.to_str().unwrap(),
-            work.to_str().unwrap(),
-        ],
-    );
-    commit_file(&work, "a");
-    git(&work, &["push", "-q", "origin", "main"]);
+    let (remote, work, _stale) = remote_work_stale(dir.path());
 
     let bare = dir.path().join("bare.git");
     git(
@@ -550,41 +386,7 @@ fn a_bare_repository_updates_its_head_branch() {
 #[test]
 fn a_branch_tracking_a_local_branch_sees_its_move() {
     let dir = tempfile::tempdir().unwrap();
-    let remote = dir.path().join("remote.git");
-    git(
-        dir.path(),
-        &[
-            "init",
-            "-q",
-            "-b",
-            "main",
-            "--bare",
-            remote.to_str().unwrap(),
-        ],
-    );
-    let work = dir.path().join("work");
-    git(
-        dir.path(),
-        &[
-            "clone",
-            "-q",
-            remote.to_str().unwrap(),
-            work.to_str().unwrap(),
-        ],
-    );
-    commit_file(&work, "a");
-    git(&work, &["push", "-q", "origin", "main"]);
-
-    let stale = dir.path().join("stale");
-    git(
-        dir.path(),
-        &[
-            "clone",
-            "-q",
-            remote.to_str().unwrap(),
-            stale.to_str().unwrap(),
-        ],
-    );
+    let (_remote, work, stale) = remote_work_stale(dir.path());
     git(&stale, &["branch", "-m", "main", "a-main"]);
     git(&stale, &["checkout", "-qb", "b-follow", "a-main"]);
     git(&stale, &["branch", "--set-upstream-to=a-main", "b-follow"]);
@@ -604,10 +406,7 @@ fn a_branch_tracking_a_local_branch_sees_its_move() {
 fn exec_runs_in_each_repository_and_ignores_the_exit_status() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
-    git(
-        dir.path(),
-        &["init", "-q", "-b", "main", repo.to_str().unwrap()],
-    );
+    make_repo(&repo);
 
     let out = nine_up(
         dir.path(),
@@ -662,10 +461,7 @@ fn exec_with_no_configured_paths_prints_nothing() {
 fn depth_uses_the_short_flag_t() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
-    git(
-        dir.path(),
-        &["init", "-q", "-b", "main", repo.to_str().unwrap()],
-    );
+    make_repo(&repo);
     let out = nine_up(dir.path(), &["update", "-t", "-1", repo.to_str().unwrap()]);
     assert!(out.status.success(), "{out:?}");
     assert!(stdout(&out).contains("repo (1 repository)"));
@@ -763,23 +559,8 @@ fn current_only_fetches_only_the_tracked_remote() {
 #[test]
 fn list_survives_a_deleted_current_directory() {
     let dir = tempfile::tempdir().unwrap();
-    let gone = dir.path().join("gone");
-    fs::create_dir(&gone).unwrap();
-    let config = dir.path().join("config.toml");
-    fs::write(&config, "repositories = [\"/srv/repos\"]\n").unwrap();
-    // cd into a directory, delete it, then run: list needs no cwd.
-    let script = format!(
-        "cd {} && rmdir {} && exec {} -C {} list",
-        gone.display(),
-        gone.display(),
-        env!("CARGO_BIN_EXE_9up"),
-        config.display()
-    );
-    let out = Command::new("sh")
-        .args(["-c", &script])
-        .env("HOME", dir.path())
-        .output()
-        .unwrap();
+    // list needs no cwd, so a deleted one must not fail it.
+    let out = run_from_deleted_cwd(dir.path(), "list");
     assert!(
         out.status.success(),
         "{}",
@@ -979,9 +760,8 @@ fn default_config_path_ignores_relative_and_empty_xdg_config_home() {
 
 #[test]
 fn a_toml_comment_and_an_unknown_key_survive_add_and_delete() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("config.toml");
-    let b = file.to_str().unwrap();
+    let (dir, file, text) = temp_config();
+    let b = text.as_str();
     fs::write(
         &file,
         "# my note\nother = 1\nrepositories = [\n    # first\n    \"/a\",\n]\n",
@@ -1003,9 +783,8 @@ fn a_toml_comment_and_an_unknown_key_survive_add_and_delete() {
 
 #[test]
 fn delete_removes_only_the_first_match() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("config.toml");
-    let b = file.to_str().unwrap();
+    let (dir, file, text) = temp_config();
+    let b = text.as_str();
     fs::write(&file, "repositories = [\"/a\", \"/b\", \"/a\"]\n").unwrap();
 
     let deleted = nine_up(dir.path(), &["-C", b, "delete", "/a"]);
@@ -1017,9 +796,8 @@ fn delete_removes_only_the_first_match() {
 
 #[test]
 fn a_no_op_delete_and_clean_leave_the_file_unchanged() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("config.toml");
-    let b = file.to_str().unwrap();
+    let (dir, file, text) = temp_config();
+    let b = text.as_str();
     // Non-canonical spacing: any rewrite of the file would show.
     let text = format!(
         "# heading\nrepositories = [\"{}\", \"# note\"]\n",
@@ -1038,9 +816,8 @@ fn a_no_op_delete_and_clean_leave_the_file_unchanged() {
 
 #[test]
 fn an_unparseable_config_fails_with_exit_1() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("config.toml");
-    let b = file.to_str().unwrap();
+    let (dir, file, text) = temp_config();
+    let b = text.as_str();
     for text in [
         "repositories = [\n",
         "repositories = \"/a\"\n",
@@ -1059,8 +836,7 @@ fn an_unparseable_config_fails_with_exit_1() {
 
 #[test]
 fn a_missing_repositories_key_means_no_repositories() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("config.toml");
+    let (dir, file, _) = temp_config();
     fs::write(&file, "other = 1\n").unwrap();
     let out = nine_up(dir.path(), &["-C", file.to_str().unwrap(), "list"]);
     assert!(out.status.success());
@@ -1140,9 +916,8 @@ fn exec_in_a_bare_repository_runs_in_the_repository_directory() {
 
 #[test]
 fn clean_with_no_configured_repositories_says_so() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("config.toml");
-    let b = file.to_str().unwrap();
+    let (dir, _file, text) = temp_config();
+    let b = text.as_str();
     let out = nine_up(dir.path(), &["-C", b, "clean"]);
     assert!(out.status.success());
     assert!(stdout(&out).contains("No repositories configured."));
@@ -1150,10 +925,9 @@ fn clean_with_no_configured_repositories_says_so() {
 
 #[test]
 fn update_with_a_lone_hash_entry_prints_nothing_for_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("config.toml");
+    let (dir, file, text) = temp_config();
     fs::write(&file, "repositories = [\"#\"]\n").unwrap();
-    let b = file.to_str().unwrap();
+    let b = text.as_str();
     let out = nine_up(dir.path(), &["-C", b]);
     assert!(out.status.success(), "{}", stdout(&out));
     assert!(!stdout(&out).contains('#'), "{}", stdout(&out));
@@ -1161,14 +935,13 @@ fn update_with_a_lone_hash_entry_prints_nothing_for_it() {
 
 #[test]
 fn exec_prints_comment_and_missing_entries() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("config.toml");
+    let (dir, file, text) = temp_config();
     fs::write(
         &file,
         "repositories = [\"# note\", \"/nonexistent-9up-test\"]\n",
     )
     .unwrap();
-    let b = file.to_str().unwrap();
+    let b = text.as_str();
     let out = nine_up(dir.path(), &["-C", b, "exec", "--", "true"]);
     assert!(out.status.success(), "{}", stdout(&out));
     let text = stdout(&out);
@@ -1179,22 +952,7 @@ fn exec_prints_comment_and_missing_entries() {
 #[test]
 fn update_fails_from_a_deleted_current_directory() {
     let dir = tempfile::tempdir().unwrap();
-    let gone = dir.path().join("gone");
-    fs::create_dir(&gone).unwrap();
-    let config = dir.path().join("config.toml");
-    fs::write(&config, "repositories = [\"/srv/repos\"]\n").unwrap();
-    let script = format!(
-        "cd {} && rmdir {} && exec {} -C {}",
-        gone.display(),
-        gone.display(),
-        env!("CARGO_BIN_EXE_9up"),
-        config.display()
-    );
-    let out = Command::new("sh")
-        .args(["-c", &script])
-        .env("HOME", dir.path())
-        .output()
-        .unwrap();
+    let out = run_from_deleted_cwd(dir.path(), "");
     assert!(!out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("9up:"),
