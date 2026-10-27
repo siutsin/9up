@@ -396,6 +396,40 @@ mod tests {
         }
     }
 
+    /// A system whose file holds text that is not valid TOML.
+    struct GarbledSys;
+
+    impl Sys for GarbledSys {
+        fn read(&self, _path: &Path) -> io::Result<Vec<u8>> {
+            Ok(b"repositories = [\n".to_vec())
+        }
+
+        fn write(&self, _path: &Path, _contents: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn save_fails_on_an_unparseable_existing_file() {
+        assert!(save(&GarbledSys, Path::new("/x/config.toml"), &[]).is_err());
+    }
+
+    #[test]
+    fn join_reuses_the_indent_of_the_comment_head() {
+        assert_eq!(join("  # note", "rest"), "  # note\n  rest");
+        assert_eq!(join("# note", "rest"), "# note\n    rest");
+    }
+
+    #[test]
+    fn save_moves_a_removed_comment_back_to_the_previous_entry() {
+        let (text, kept) = run_save(
+            "repositories = [\n    \"/a\",\n    \"/b\", # note\n]\n",
+            &["/a"],
+        );
+        assert_eq!(kept, ["/a"]);
+        assert_eq!(text, "repositories = [\n    \"/a\", # note\n]\n");
+    }
+
     #[test]
     fn save_does_not_overwrite_a_file_it_cannot_read() {
         assert!(save(&DenyReadSys, Path::new("/x/config.toml"), &[]).is_err());

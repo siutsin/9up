@@ -5,7 +5,7 @@ Do not implement before this plan is merged into `master`.
 
 Setup is in `README.md`. Verify every change with `cargo fmt --check`,
 `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked` and `markdownlint-cli2 '**/*.md'`.
-Coverage is a gate: `mise run coverage` fails below 97% of lines (the task and the tool are pinned in `mise.toml`).
+Coverage is a gate: `mise run coverage` fails when any production function is not covered in full by one test run — the unit run or the integration children (the task and the tool are pinned in `mise.toml`). Test code does not count toward it.
 
 ## Rules
 

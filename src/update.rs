@@ -511,6 +511,7 @@ mod tests {
         Fails,
         FailsSilently,
         Succeeds,
+        Changes,
     }
 
     impl Sys for StubSys {
@@ -537,6 +538,7 @@ mod tests {
                         FetchStub::Fails => Ok(output(256, "", "fatal: boom\n")),
                         FetchStub::FailsSilently => Ok(output(256, "", "")),
                         FetchStub::Succeeds => Ok(output(0, "", "")),
+                        FetchStub::Changes => Ok(output(0, "* 0 0 refs/remotes/origin/feat\n", "")),
                     }
                 }
                 _ => Ok(output(0, "", "")),
@@ -772,6 +774,7 @@ mod tests {
 
     enum ActionStub {
         FailsSilently,
+        FailsWith(&'static str),
         CannotStart,
     }
 
@@ -805,6 +808,7 @@ mod tests {
                 }
                 ["merge", ..] | ["branch", "-f", ..] => match self.action {
                     ActionStub::FailsSilently => Ok(output(256, "", "")),
+                    ActionStub::FailsWith(stderr) => Ok(output(256, "", stderr)),
                     ActionStub::CannotStart => {
                         Err(io::Error::new(io::ErrorKind::NotFound, "no git here"))
                     }
@@ -976,6 +980,259 @@ mod tests {
     fn parse_fetch_output_skips_lines_without_fields() {
         assert!(parse_fetch_output("garbage", "origin").is_empty());
         assert!(parse_fetch_output("", "origin").is_empty());
+    }
+
+    #[test]
+    fn a_fetch_with_changes_reports_the_new_branch() {
+        let sys = StubSys::new(FetchStub::Changes);
+        let options = Options {
+            current_only: false,
+            fetch_only: true,
+            prune: false,
+        };
+        let report = update_repo(&sys, Path::new("/repo"), "repo", &options);
+        match &report.steps[..] {
+            [
+                Step::Fetch {
+                    outcome: FetchOutcome::Changed(changes),
+                    ..
+                },
+            ] => assert_eq!(changes, &[(Kind::NewBranch, vec!["feat".to_owned()])]),
+            _ => panic!("unexpected steps"),
+        }
+    }
+
+    #[test]
+    fn a_detached_head_with_current_only_is_a_repository_error() {
+        let options = Options {
+            current_only: true,
+            fetch_only: true,
+            prune: false,
+        };
+        let report = update_repo(&DeadSys, Path::new("/repo"), "repo", &options);
+        match &report.steps[..] {
+            [Step::Error(message)] => {
+                assert_eq!(message, "HEAD is detached, so no remote is tracked.")
+            }
+            _ => panic!("unexpected steps"),
+        }
+    }
+
+    /// A system whose only remote has a URL but no fetch refspec.
+    struct RefspecLessSys;
+
+    impl Sys for RefspecLessSys {
+        fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+            match argv {
+                ["config", "--get-regexp", ..] => {
+                    Ok(output(0, "remote.empty.url /srv/git.git\n", ""))
+                }
+                _ => Ok(output(0, "", "")),
+            }
+        }
+    }
+
+    #[test]
+    fn a_remote_without_a_refspec_is_a_fetch_skip() {
+        let options = Options {
+            current_only: false,
+            fetch_only: false,
+            prune: false,
+        };
+        let report = update_repo(&RefspecLessSys, Path::new("/repo"), "repo", &options);
+        match &report.steps[..] {
+            [
+                Step::Fetch {
+                    remote,
+                    outcome: FetchOutcome::NoRefspec,
+                },
+            ] => assert_eq!(remote, "empty"),
+            _ => panic!("unexpected steps"),
+        }
+    }
+
+    /// One branch per silent-skip arm of the branch step, plus an
+    /// up-to-date branch, a diverged branch, a branch that cannot
+    /// move, and the current branch fast-forwarding.
+    struct SkipSys;
+
+    const SKIP_REFS: &str = "refs/heads/main\0aa\0refs/remotes/origin/main\n\
+        refs/remotes/origin/main\0bb\0\n\
+        refs/heads/lonely\0cc\0\n\
+        refs/heads/ghost\0dd\0refs/remotes/origin/ghost\n\
+        refs/heads/orphan\0ee\0refs/remotes/origin/orphan\n\
+        refs/remotes/origin/orphan\0ff\0\n\
+        refs/heads/calm\0gg\0refs/remotes/origin/calm\n\
+        refs/remotes/origin/calm\0hh\0\n\
+        refs/heads/forked\0ii\0refs/remotes/origin/forked\n\
+        refs/remotes/origin/forked\0jj\0\n\
+        refs/heads/stuck\0kk\0refs/remotes/origin/stuck\n\
+        refs/remotes/origin/stuck\0ll\0\n\
+        refs/heads/moved\0mm\0refs/remotes/origin/moved\n\
+        refs/remotes/origin/moved\0nn\0\n";
+
+    impl Sys for SkipSys {
+        fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+            match argv {
+                ["config", "--get-regexp", ..] => Ok(output(
+                    0,
+                    "remote.origin.url /srv/git.git\nremote.origin.fetch +refs/heads/*:refs/remotes/origin/*\n",
+                    "",
+                )),
+                ["symbolic-ref", "-q", "HEAD"] => Ok(output(0, "refs/heads/main\n", "")),
+                ["for-each-ref", ..] => Ok(output(0, SKIP_REFS, "")),
+                ["merge-base", "aa", "bb"] => Ok(output(0, "aa\n", "")),
+                ["merge-base", "ee", "ff"] => Ok(output(256, "", "")),
+                ["merge-base", "gg", "hh"] => Ok(output(0, "hh\n", "")),
+                ["merge-base", "ii", "jj"] => Ok(output(0, "zz\n", "")),
+                ["merge-base", "kk", "ll"] => Ok(output(0, "kk\n", "")),
+                ["merge-base", "mm", "nn"] => Ok(output(0, "mm\n", "")),
+                ["merge", ..] => Ok(output(0, "", "")),
+                ["branch", "-f", "--", "stuck", ..] => Ok(output(256, "", "some plain failure\n")),
+                ["branch", "-f", ..] => Ok(output(0, "", "")),
+                _ => Ok(output(0, "", "")),
+            }
+        }
+    }
+
+    fn branch_outcome<'a>(report: &'a Report, name: &str) -> &'a BranchOutcome {
+        report
+            .steps
+            .iter()
+            .find_map(|step| match step {
+                Step::Branch {
+                    name: found,
+                    outcome,
+                } if found == name => Some(outcome),
+                _ => None,
+            })
+            .expect("a branch step for the name")
+    }
+
+    #[test]
+    fn the_branch_step_skips_and_reports_each_arm() {
+        let options = Options {
+            current_only: false,
+            fetch_only: false,
+            prune: false,
+        };
+        let report = update_repo(&SkipSys, Path::new("/repo"), "repo", &options);
+        let branches: Vec<&Step> = report
+            .steps
+            .iter()
+            .filter(|step| matches!(step, Step::Branch { .. }))
+            .collect();
+        assert_eq!(branches.len(), 5);
+        match branch_outcome(&report, "main") {
+            BranchOutcome::Updated { from, to } => {
+                assert_eq!(from, "aa");
+                assert_eq!(to, "bb");
+            }
+            _ => panic!("unexpected outcome for main"),
+        }
+        assert!(matches!(
+            branch_outcome(&report, "calm"),
+            BranchOutcome::UpToDate
+        ));
+        match branch_outcome(&report, "forked") {
+            BranchOutcome::Skipped(reason) => {
+                assert_eq!(reason, "a fast-forward is not possible")
+            }
+            _ => panic!("unexpected outcome for forked"),
+        }
+        match branch_outcome(&report, "stuck") {
+            BranchOutcome::Error(line) => {
+                assert_eq!(line, "git branch -f stuck failed with exit status: 1.")
+            }
+            _ => panic!("unexpected outcome for stuck"),
+        }
+        match branch_outcome(&report, "moved") {
+            BranchOutcome::Updated { from, to } => {
+                assert_eq!(from, "mm");
+                assert_eq!(to, "nn");
+            }
+            _ => panic!("unexpected outcome for moved"),
+        }
+    }
+
+    #[test]
+    fn a_merge_failure_with_the_local_changes_wording_reports_uncommitted_changes() {
+        let sys = BranchSys {
+            current: "main",
+            refs: BRANCH_REFS,
+            refs_fail: false,
+            action: ActionStub::FailsWith(
+                "error: Your local changes to the file would be overwritten by merge\n",
+            ),
+        };
+        match branch_step(&branch_report(&sys)) {
+            Step::Branch {
+                outcome: BranchOutcome::Skipped(reason),
+                ..
+            } => assert_eq!(reason, "uncommitted changes"),
+            _ => panic!("unexpected step"),
+        }
+    }
+
+    #[test]
+    fn a_merge_failure_mentioning_only_local_changes_is_a_plain_merge_failure() {
+        let sys = BranchSys {
+            current: "main",
+            refs: BRANCH_REFS,
+            refs_fail: false,
+            action: ActionStub::FailsWith("error: Your local changes would be lost\n"),
+        };
+        match branch_step(&branch_report(&sys)) {
+            Step::Branch {
+                outcome: BranchOutcome::Skipped(reason),
+                ..
+            } => assert_eq!(reason, "merge failed"),
+            _ => panic!("unexpected step"),
+        }
+    }
+
+    /// A system that reads a repository and runs the command.
+    struct ExecSys;
+
+    impl Sys for ExecSys {
+        fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+            match argv {
+                ["rev-parse", "--absolute-git-dir"] => Ok(output(0, "/repo/.git\n", "")),
+                ["rev-parse", "--show-toplevel"] => Ok(output(0, "/repo\n", "")),
+                _ => Ok(output(0, "", "")),
+            }
+        }
+
+        fn exec(&self, _dir: &Path, _argv: &[String]) -> io::Result<Output> {
+            Ok(output(0, "hello\n", "warn\n"))
+        }
+    }
+
+    #[test]
+    fn exec_reports_the_command_output() {
+        let report = exec_repo(&ExecSys, Path::new("/repo"), "repo", &["ls".to_owned()]);
+        assert_eq!(report.name, "repo");
+        assert_eq!(report.stdout, "hello\n");
+        assert_eq!(report.stderr, "warn\n");
+        assert_eq!(report.error, None);
+    }
+
+    #[test]
+    fn parse_fetch_output_keeps_a_reference_with_no_parts_to_drop() {
+        let text = "\n* 0 0 v1\n";
+        assert_eq!(
+            parse_fetch_output(text, "origin"),
+            [(Kind::NewBranch, vec!["v1".to_owned()])]
+        );
+    }
+
+    #[test]
+    fn parse_fetch_output_groups_repeated_kinds_together() {
+        let text = "* 0 0 refs/remotes/origin/a\n* 0 0 refs/remotes/origin/b\n";
+        assert_eq!(
+            parse_fetch_output(text, "origin"),
+            [(Kind::NewBranch, vec!["a".to_owned(), "b".to_owned()])]
+        );
     }
 
     #[test]

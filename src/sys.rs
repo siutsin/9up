@@ -94,6 +94,14 @@ mod tests {
     impl Sys for Bare {}
 
     #[test]
+    fn a_write_under_a_file_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        assert!(RealSys.write(&blocker.join("child.toml"), b"x").is_err());
+    }
+
+    #[test]
     fn a_bare_stub_fails_every_call() {
         let path = Path::new("/nowhere");
         assert!(Bare.git(path, &["status"]).is_err());

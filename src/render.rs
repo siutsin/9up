@@ -283,6 +283,101 @@ mod tests {
         assert!(text.contains("main: error: failed"), "{text}");
     }
 
+    /// A writer that refuses any write containing `needle`, so a
+    /// render fails on one chosen line.
+    struct LineRefusingWriter {
+        needle: &'static str,
+    }
+
+    impl Write for LineRefusingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if String::from_utf8_lossy(buf).contains(self.needle) {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed"));
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn render_report_reports_a_failure_on_each_line() {
+        let report = update::Report {
+            name: "repo".to_owned(),
+            steps: vec![
+                update::Step::Fetch {
+                    remote: "origin".to_owned(),
+                    outcome: update::FetchOutcome::Changed(vec![(
+                        update::Kind::NewBranch,
+                        vec!["feat".to_owned()],
+                    )]),
+                },
+                update::Step::Fetch {
+                    remote: "upstream".to_owned(),
+                    outcome: update::FetchOutcome::UpToDate,
+                },
+                update::Step::Branch {
+                    name: "main".to_owned(),
+                    outcome: update::BranchOutcome::Updated {
+                        from: "1111111111111111111111111111111111111111".to_owned(),
+                        to: "2222222222222222222222222222222222222222".to_owned(),
+                    },
+                },
+                update::Step::Branch {
+                    name: "side".to_owned(),
+                    outcome: update::BranchOutcome::UpToDate,
+                },
+                update::Step::Branch {
+                    name: "old".to_owned(),
+                    outcome: update::BranchOutcome::Skipped(
+                        "a fast-forward is not possible".to_owned(),
+                    ),
+                },
+                update::Step::Error("No remotes.".to_owned()),
+            ],
+        };
+        // Each needle sits inside one write of its line: a formatted
+        // line goes out in pieces, so a phrase spanning two pieces
+        // never appears in a single write.
+        for needle in [
+            "repo",
+            "new branches: feat.",
+            "upstream",
+            "main",
+            "side",
+            "old",
+            "No remotes.",
+        ] {
+            let mut out = LineRefusingWriter { needle };
+            assert!(
+                render_report(&report, false, &mut out).is_err(),
+                "needle: {needle}"
+            );
+        }
+        let report = update::Report {
+            name: "repo".to_owned(),
+            steps: vec![
+                update::Step::Fetch {
+                    remote: "origin".to_owned(),
+                    outcome: update::FetchOutcome::Error(vec!["fatal: boom".to_owned()]),
+                },
+                update::Step::Branch {
+                    name: "main".to_owned(),
+                    outcome: update::BranchOutcome::Error("error: failed".to_owned()),
+                },
+            ],
+        };
+        for needle in ["fatal: boom", "error: failed"] {
+            let mut out = LineRefusingWriter { needle };
+            assert!(
+                render_report(&report, false, &mut out).is_err(),
+                "needle: {needle}"
+            );
+        }
+    }
+
     #[test]
     fn render_report_reports_a_failed_write() {
         let report = update::Report {
