@@ -182,7 +182,7 @@ fn main() -> ExitCode {
         },
     };
     let config_dir = dirs::config_dir();
-    let config_file = config_path(&cli, config_dir.as_deref());
+    let config_file = config::file_path(cli.config_file.as_deref(), config_dir.as_deref());
     let mut app = App {
         sys: Box::new(RealSys),
         cwd,
@@ -287,12 +287,11 @@ fn paint(enabled: bool, code: &str, text: &str) -> String {
 }
 
 fn update(app: &mut App, args: &UpdateArgs) -> io::Result<ExitCode> {
-    let out = &mut *app.out;
     let inputs: Vec<String> = if args.paths.is_empty() {
         let entries = config::load(&*app.sys, &app.config_file)?;
         if entries.is_empty() {
             writeln!(
-                out,
+                &mut *app.out,
                 "No repositories configured. Add one with `9up add <path>`."
             )?;
             return Ok(ExitCode::SUCCESS);
@@ -301,38 +300,15 @@ fn update(app: &mut App, args: &UpdateArgs) -> io::Result<ExitCode> {
     } else {
         args.paths.clone()
     };
-    let colour = app.colour;
-    for input in &inputs {
-        match discover::resolve(input, &app.cwd, app.home.as_deref(), args.depth) {
-            discover::Resolved::Repos(repos) => {
-                print_header(
-                    out,
-                    colour,
-                    input,
-                    app.home.as_deref(),
-                    &app.cwd,
-                    repos.len(),
-                )?;
-                let options = update::Options {
-                    current_only: args.current_only,
-                    fetch_only: args.fetch_only,
-                    prune: args.prune,
-                };
-                for repo in &repos {
-                    let report = update::update_repo(&*app.sys, &repo.path, &repo.name, &options);
-                    render_report(&report, colour, out)?;
-                }
-            }
-            discover::Resolved::Comment(text) => {
-                if !text.is_empty() {
-                    writeln!(out, "{text}")?;
-                }
-            }
-            discover::Resolved::PathError(message) => {
-                writeln!(out, "{}", paint(colour, RED, &message))?;
-            }
-        }
-    }
+    let options = update::Options {
+        current_only: args.current_only,
+        fetch_only: args.fetch_only,
+        prune: args.prune,
+    };
+    for_each_repo(app, &inputs, args.depth, |app, repo| {
+        let report = update::update_repo(&*app.sys, &repo.path, &repo.name, &options);
+        render_report(&report, app.colour, &mut *app.out)
+    })?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -445,9 +421,7 @@ fn clean(app: &mut App) -> io::Result<ExitCode> {
             continue;
         }
         let expanded = discover::expand_home(entry, app.home.as_deref());
-        let live =
-            expanded.is_dir() || !discover::glob_paths(&expanded.display().to_string()).is_empty();
-        if live {
+        if discover::path_is_live(&expanded) {
             kept.push(entry.clone());
         } else {
             removed = true;
@@ -462,484 +436,65 @@ fn clean(app: &mut App) -> io::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The config file for this run: the `-C` value, or the default path
-/// under the platform config directory.
-fn config_path(cli: &Cli, config_dir: Option<&Path>) -> PathBuf {
-    if let Some(path) = cli.config_file.as_deref().filter(|path| !path.is_empty()) {
-        return PathBuf::from(path);
-    }
-    // The config directory comes from `dirs` (see main): on Linux a
-    // relative XDG_CONFIG_HOME is ignored, as the specification
-    // requires. No config directory at all falls back to `.config`.
-    let config = config_dir
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from(".config"));
-    config.join("9up").join("config.toml")
-}
-
 fn exec(app: &mut App, paths: &[String], depth: i32, command: &[String]) -> io::Result<ExitCode> {
-    let out = &mut *app.out;
     let inputs: Vec<String> = if paths.is_empty() {
         // No hint here: an exec run with no configured paths prints nothing.
         config::load(&*app.sys, &app.config_file)?
     } else {
         paths.to_vec()
     };
-    let colour = app.colour;
-    for input in &inputs {
+    for_each_repo(app, &inputs, depth, |app, repo| {
+        let report = update::exec_repo(&*app.sys, &repo.path, &repo.name, command);
+        let out = &mut *app.out;
+        writeln!(out, "  {}", paint(app.colour, BOLD_GREEN, &report.name))?;
+        if let Some(error) = &report.error {
+            red_line(out, app.colour, error)
+        } else {
+            for line in report.stdout.lines().chain(report.stderr.lines()) {
+                writeln!(out, "    {line}")?;
+            }
+            Ok(())
+        }
+    })?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The walk `update` and `exec` share: resolve each input in turn, print
+/// its group header, and run `op` on every repository found. A comment
+/// input prints as a line of its own; a bad path prints in red.
+fn for_each_repo(
+    app: &mut App,
+    inputs: &[String],
+    depth: i32,
+    mut op: impl FnMut(&mut App, &discover::Repo) -> io::Result<()>,
+) -> io::Result<()> {
+    for input in inputs {
         match discover::resolve(input, &app.cwd, app.home.as_deref(), depth) {
             discover::Resolved::Repos(repos) => {
                 print_header(
-                    out,
-                    colour,
+                    &mut *app.out,
+                    app.colour,
                     input,
                     app.home.as_deref(),
                     &app.cwd,
                     repos.len(),
                 )?;
                 for repo in &repos {
-                    let report = update::exec_repo(&*app.sys, &repo.path, &repo.name, command);
-                    writeln!(out, "  {}", paint(colour, BOLD_GREEN, &report.name))?;
-                    if let Some(error) = &report.error {
-                        red_line(out, colour, error)?;
-                    } else {
-                        for line in report.stdout.lines().chain(report.stderr.lines()) {
-                            writeln!(out, "    {line}")?;
-                        }
-                    }
+                    op(app, repo)?;
                 }
             }
             discover::Resolved::Comment(text) => {
                 if !text.is_empty() {
-                    writeln!(out, "{text}")?;
+                    writeln!(&mut *app.out, "{text}")?;
                 }
             }
             discover::Resolved::PathError(message) => {
-                writeln!(out, "{}", paint(colour, RED, &message))?;
+                writeln!(&mut *app.out, "{}", paint(app.colour, RED, &message))?;
             }
         }
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    fn shim(args: &[&str]) -> Vec<String> {
-        insert_update(args.iter().map(OsString::from).collect())
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect()
-    }
-
-    #[test]
-    fn bare_paths_gain_the_update_command() {
-        assert_eq!(shim(&["9up", "a", "b"]), ["9up", "update", "a", "b"]);
-        assert_eq!(shim(&["9up", "-c", "a"]), ["9up", "update", "-c", "a"]);
-        assert_eq!(
-            shim(&["9up", "-t", "-1", "a"]),
-            ["9up", "update", "-t", "-1", "a"]
-        );
-    }
-
-    #[test]
-    fn commands_and_flags_pass_through() {
-        assert_eq!(shim(&["9up"]), ["9up"]);
-        assert_eq!(shim(&["9up", "list"]), ["9up", "list"]);
-        assert_eq!(
-            shim(&["9up", "-C", "f", "list"]),
-            ["9up", "-C", "f", "list"]
-        );
-        assert_eq!(
-            shim(&["9up", "--config", "f", "list"]),
-            ["9up", "--config", "f", "list"]
-        );
-        assert_eq!(shim(&["9up", "--version"]), ["9up", "--version"]);
-        assert_eq!(shim(&["9up", "help"]), ["9up", "help"]);
-    }
-
-    #[test]
-    fn bare_options_without_a_path_mean_update() {
-        assert_eq!(shim(&["9up", "-c"]), ["9up", "update", "-c"]);
-        assert_eq!(shim(&["9up", "-p", "-f"]), ["9up", "update", "-p", "-f"]);
-        assert_eq!(shim(&["9up", "-t3"]), ["9up", "update", "-t3"]);
-        assert_eq!(shim(&["9up", "-t-1"]), ["9up", "update", "-t-1"]);
-        assert_eq!(shim(&["9up", "-t=3"]), ["9up", "update", "-t=3"]);
-        assert_eq!(shim(&["9up", "--depth=2"]), ["9up", "update", "--depth=2"]);
-        assert_eq!(
-            shim(&["9up", "-C", "f", "-c"]),
-            ["9up", "update", "-C", "f", "-c"]
-        );
-        assert_eq!(
-            shim(&["9up", "--config", "f", "-c"]),
-            ["9up", "update", "--config", "f", "-c"]
-        );
-        assert_eq!(shim(&["9up", "-C", "f"]), ["9up", "-C", "f"]);
-    }
-
-    #[test]
-    fn config_path_uses_the_flag_then_the_platform_directory() {
-        let plain = Cli {
-            config_file: None,
-            command: None,
-        };
-        assert_eq!(
-            config_path(&plain, Some(Path::new("/cfg"))),
-            PathBuf::from("/cfg/9up/config.toml")
-        );
-        // No platform directory at all: the relative fallback.
-        assert_eq!(
-            config_path(&plain, None),
-            PathBuf::from(".config/9up/config.toml")
-        );
-        let flagged = Cli {
-            config_file: Some("mine.toml".to_owned()),
-            command: None,
-        };
-        assert_eq!(config_path(&flagged, None), PathBuf::from("mine.toml"));
-        let empty = Cli {
-            config_file: Some(String::new()),
-            command: None,
-        };
-        assert_eq!(
-            config_path(&empty, Some(Path::new("/cfg"))),
-            PathBuf::from("/cfg/9up/config.toml")
-        );
-    }
-
-    #[test]
-    fn print_header_shows_the_absolute_path_and_count() {
-        let mut out: Vec<u8> = Vec::new();
-        print_header(&mut out, false, "base", None, Path::new("/work"), 1).unwrap();
-        assert_eq!(
-            String::from_utf8(out).unwrap(),
-            "/work/base (1 repository)\n"
-        );
-        let mut out: Vec<u8> = Vec::new();
-        print_header(&mut out, false, "/srv/repos", None, Path::new("/work"), 2).unwrap();
-        assert_eq!(
-            String::from_utf8(out).unwrap(),
-            "/srv/repos (2 repositories)\n"
-        );
-        let mut out: Vec<u8> = Vec::new();
-        print_header(
-            &mut out,
-            false,
-            "~/repos",
-            Some(Path::new("/home/a")),
-            Path::new("/work"),
-            0,
-        )
-        .unwrap();
-        assert_eq!(
-            String::from_utf8(out).unwrap(),
-            "/home/a/repos (0 repositories)\n"
-        );
-    }
-
-    #[test]
-    fn render_report_prints_fetch_and_branch_lines() {
-        let report = update::Report {
-            name: "repo".to_owned(),
-            steps: vec![
-                update::Step::Fetch {
-                    remote: "origin".to_owned(),
-                    outcome: update::FetchOutcome::Changed(vec![(
-                        update::Kind::NewBranch,
-                        vec!["feat".to_owned()],
-                    )]),
-                },
-                update::Step::Fetch {
-                    remote: "upstream".to_owned(),
-                    outcome: update::FetchOutcome::UpToDate,
-                },
-                update::Step::Branch {
-                    name: "main".to_owned(),
-                    outcome: update::BranchOutcome::Updated {
-                        from: "1111111111111111111111111111111111111111".to_owned(),
-                        to: "2222222222222222222222222222222222222222".to_owned(),
-                    },
-                },
-                update::Step::Branch {
-                    name: "side".to_owned(),
-                    outcome: update::BranchOutcome::UpToDate,
-                },
-                update::Step::Branch {
-                    name: "old".to_owned(),
-                    outcome: update::BranchOutcome::Skipped(
-                        "a fast-forward is not possible".to_owned(),
-                    ),
-                },
-                update::Step::Error("No remotes.".to_owned()),
-            ],
-        };
-        let mut out: Vec<u8> = Vec::new();
-        render_report(&report, false, &mut out).unwrap();
-        let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("  repo\n"), "{text}");
-        assert!(
-            text.contains("Fetched origin: new branches: feat."),
-            "{text}"
-        );
-        assert!(text.contains("upstream is up to date."), "{text}");
-        assert!(text.contains("main updated: 1111111..2222222"), "{text}");
-        assert!(text.contains("side is up to date."), "{text}");
-        assert!(
-            text.contains("old skipped: a fast-forward is not possible."),
-            "{text}"
-        );
-        assert!(text.contains("No remotes."), "{text}");
-    }
-
-    #[test]
-    fn render_report_prints_fetch_skip_and_error_lines() {
-        let report = update::Report {
-            name: "repo".to_owned(),
-            steps: vec![
-                update::Step::Fetch {
-                    remote: "empty".to_owned(),
-                    outcome: update::FetchOutcome::NoRefspec,
-                },
-                update::Step::Fetch {
-                    remote: "origin".to_owned(),
-                    outcome: update::FetchOutcome::Error(vec!["fatal: boom".to_owned()]),
-                },
-                update::Step::Branch {
-                    name: "main".to_owned(),
-                    outcome: update::BranchOutcome::Error("error: failed".to_owned()),
-                },
-            ],
-        };
-        let mut out: Vec<u8> = Vec::new();
-        render_report(&report, false, &mut out).unwrap();
-        let text = String::from_utf8(out).unwrap();
-        assert!(
-            text.contains("empty has no fetch refspec. Skipped."),
-            "{text}"
-        );
-        assert!(text.contains("fatal: boom"), "{text}");
-        assert!(text.contains("main: error: failed"), "{text}");
-    }
-
-    #[test]
-    fn a_bare_long_option_means_update() {
-        assert_eq!(
-            shim(&["9up", "--fetch-only"]),
-            ["9up", "update", "--fetch-only"]
-        );
-        assert_eq!(shim(&["9up", "--prune"]), ["9up", "update", "--prune"]);
-    }
-
-    #[test]
-    fn paint_wraps_the_text_in_the_codes_when_enabled() {
-        assert_eq!(paint(true, RED, "x"), format!("{RED}x{RESET}"));
-        assert_eq!(paint(false, RED, "x"), "x");
-    }
-
-    struct FailingWriter;
-
-    impl Write for FailingWriter {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            let _ = buf;
-            Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed"))
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// A writer that refuses the fetch-skip line, so a render fails
-    /// midway rather than on its first line.
-    struct SkipLineRefusingWriter;
-
-    impl Write for SkipLineRefusingWriter {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            if String::from_utf8_lossy(buf).contains("refspec") {
-                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed"));
-            }
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn print_header_reports_a_failed_write() {
-        let mut out = FailingWriter;
-        assert!(print_header(&mut out, false, "/x", None, Path::new("/"), 1).is_err());
-    }
-
-    #[test]
-    fn the_test_writers_flush_successfully() {
-        assert!(FailingWriter.flush().is_ok());
-        assert!(SkipLineRefusingWriter.flush().is_ok());
-    }
-
-    /// A system that serves one in-memory config file and answers
-    /// every git call with empty success.
-    struct MemorySys {
-        config: Vec<u8>,
-    }
-
-    impl crate::sys::Sys for MemorySys {
-        fn git(&self, _dir: &Path, _argv: &[&str]) -> io::Result<std::process::Output> {
-            Ok(std::process::Output {
-                status: std::os::unix::process::ExitStatusExt::from_raw(0),
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-            })
-        }
-
-        fn read(&self, _path: &Path) -> io::Result<Vec<u8>> {
-            Ok(self.config.clone())
-        }
-    }
-
-    fn test_app<'a>(config: Vec<u8>, cwd: &Path, out: &'a mut (dyn Write + 'a)) -> App<'a> {
-        App {
-            sys: Box::new(MemorySys { config }),
-            cwd: cwd.to_path_buf(),
-            home: None,
-            config_file: cwd.join("config.toml"),
-            colour: false,
-            out,
-        }
-    }
-
-    fn fake_repo(dir: &Path) {
-        let git = dir.join(".git");
-        fs::create_dir_all(git.join("refs")).unwrap();
-        fs::create_dir_all(git.join("objects")).unwrap();
-        fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
-    }
-
-    #[test]
-    fn update_with_no_configured_repositories_prints_the_hint() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut out: Vec<u8> = Vec::new();
-        let mut app = test_app(Vec::new(), dir.path(), &mut out);
-        let args = UpdateArgs {
-            paths: Vec::new(),
-            ..Default::default()
-        };
-        assert!(update(&mut app, &args).is_ok());
-        let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("No repositories configured."), "{text}");
-    }
-
-    #[test]
-    fn update_reports_a_failed_hint_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut out = FailingWriter;
-        let mut app = test_app(Vec::new(), dir.path(), &mut out);
-        let args = UpdateArgs {
-            paths: Vec::new(),
-            ..Default::default()
-        };
-        assert!(update(&mut app, &args).is_err());
-    }
-
-    #[test]
-    fn update_a_repository_through_the_app() {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        fs::create_dir_all(&repo).unwrap();
-        fake_repo(&repo);
-        let config = format!("repositories = [\"{}\"]\n", repo.display()).into_bytes();
-        let mut out: Vec<u8> = Vec::new();
-        let mut app = test_app(config, dir.path(), &mut out);
-        let args = UpdateArgs {
-            paths: Vec::new(),
-            ..Default::default()
-        };
-        assert!(update(&mut app, &args).is_ok());
-        let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("(1 repository)"), "{text}");
-        assert!(text.contains("No remotes."), "{text}");
-    }
-
-    #[test]
-    fn update_reports_a_failed_header_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        fs::create_dir_all(&repo).unwrap();
-        fake_repo(&repo);
-        let config = format!("repositories = [\"{}\"]\n", repo.display()).into_bytes();
-        let mut out = FailingWriter;
-        let mut app = test_app(config, dir.path(), &mut out);
-        let args = UpdateArgs {
-            paths: Vec::new(),
-            ..Default::default()
-        };
-        assert!(update(&mut app, &args).is_err());
-    }
-
-    #[test]
-    fn exec_prints_a_missing_path_through_the_app() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = b"repositories = [\"/nonexistent-9up-test\"]\n".to_vec();
-        let mut out: Vec<u8> = Vec::new();
-        let mut app = test_app(config, dir.path(), &mut out);
-        assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_ok());
-        let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("doesn't exist."), "{text}");
-    }
-
-    #[test]
-    fn exec_prints_nothing_for_an_empty_comment() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = b"repositories = [\"#\"]\n".to_vec();
-        let mut out: Vec<u8> = Vec::new();
-        let mut app = test_app(config, dir.path(), &mut out);
-        assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_ok());
-        assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
-    }
-
-    #[test]
-    fn exec_reports_a_failed_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = b"repositories = [\"/nonexistent-9up-test\"]\n".to_vec();
-        let mut out = FailingWriter;
-        let mut app = test_app(config, dir.path(), &mut out);
-        assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_err());
-    }
-
-    #[test]
-    fn exec_reports_a_failed_header_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        fs::create_dir_all(&repo).unwrap();
-        fake_repo(&repo);
-        let config = format!("repositories = [\"{}\"]\n", repo.display()).into_bytes();
-        let mut out = FailingWriter;
-        let mut app = test_app(config, dir.path(), &mut out);
-        assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_err());
-    }
-
-    #[test]
-    fn render_report_reports_a_failed_write() {
-        let report = update::Report {
-            name: "repo".to_owned(),
-            steps: vec![update::Step::Fetch {
-                remote: "empty".to_owned(),
-                outcome: update::FetchOutcome::NoRefspec,
-            }],
-        };
-        let mut out = SkipLineRefusingWriter;
-        assert!(render_report(&report, false, &mut out).is_err());
-    }
-
-    #[test]
-    fn a_path_after_the_separator_is_a_path() {
-        assert_eq!(
-            shim(&["9up", "--", "list"]),
-            ["9up", "update", "--", "list"]
-        );
-        assert_eq!(shim(&["9up", "--", "a"]), ["9up", "update", "--", "a"]);
-    }
-}
+mod tests;
