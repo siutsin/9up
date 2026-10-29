@@ -149,8 +149,9 @@ come later.
 The default path is `$XDG_CONFIG_HOME/9up/config.toml`, or `~/.config/9up/config.toml` when the variable is
 unset or empty, on every platform, macOS included (`main` reads the variable, not the `dirs` crate: its macOS
 directory is `~/Library/Application Support`, which the owner chose not to use). A relative value is ignored,
-as the XDG specification requires. A non-UTF-8 absolute `XDG_CONFIG_HOME` is accepted. `-C ""` also uses
-the default path. With no home directory at all, the fallback is a relative `.config/9up/config.toml` path.
+as the XDG specification requires, with a warning on stderr; an empty value is simply unset.
+A non-UTF-8 absolute `XDG_CONFIG_HOME` is accepted. `-C ""` also uses the default path.
+With no home directory at all, the fallback is a relative `.config/9up/config.toml` path.
 
 - Read: parse the file as TOML (the `toml_edit` crate). A missing or unreadable file means no repositories.
   A file that is not valid TOML, a file whose content is not valid UTF-8, or a `repositories` value that

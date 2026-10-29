@@ -44,8 +44,16 @@ fn main() -> ExitCode {
     };
     // XDG on every platform, macOS included: an absolute `XDG_CONFIG_HOME`, else `~/.config`.
     let home = dirs::home_dir();
-    let config_dir = env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
+    let xdg = env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    if let Some(path) = xdg.as_ref().filter(|path| path.is_relative()) {
+        eprintln!(
+            "9up: ignoring XDG_CONFIG_HOME={}: it is not an absolute path",
+            path.display()
+        );
+    }
+    let config_dir = xdg
         .filter(|path| path.is_absolute())
         .or_else(|| home.as_ref().map(|home| home.join(".config")));
     let config_file = config::file_path(cli.config_file.as_deref(), config_dir.as_deref());
