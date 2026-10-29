@@ -1,7 +1,6 @@
 # 9up
 
 Read the plan in `.agents/planning.md` before you change code.
-Do not implement before this plan is merged into `master`.
 
 Setup is in `README.md`. Verify every change with `cargo fmt --check`,
 `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked` and `markdownlint-cli2 '**/*.md'`.

@@ -1,7 +1,6 @@
 # 9up Plan
 
-Status: approved plan for a Rust CLI inspired by `gitup` 0.5.2. The plan was approved by merging its pull
-request into `master`, and the implementation has followed it.
+Status: the reference for a Rust CLI inspired by `gitup` 0.5.2. The implementation follows it.
 
 9up is a new tool, not a port. It does the jobs `gitup` (the Python `git-repo-updater` by Ben Kurtovic) does, in
 the same broad shape, because that shape works. Feature parity is the goal: the same jobs. Its state is its
@@ -239,7 +238,8 @@ otherwise.
 ### Dependencies
 
 Five crates, plus one for tests. The standard library covers the rest. Every version is pinned exactly (`=` in `Cargo.toml`), so each
-update arrives as a Renovate pull request instead of drifting inside a range.
+update arrives as a Renovate pull request instead of drifting inside a range. A bump that changes a behaviour
+this plan states gets a plan update in the same pull request.
 
 | Crate | Use |
 | --- | --- |
@@ -257,98 +257,11 @@ parts), and the child process (`std::process::Command`).
 Not added: a colour crate, an error-type crate, a test-framework crate, a splitting
 crate for the exec command (the shell already split it).
 
-## Step 1: Foundation, Config And Discovery
-
-One pull request builds the crate, the config commands and repository discovery. No repository updates
-yet: paths and configured entries print their headers, the repository names under them, comments and path errors.
-
-### Verified Versions
-
-Checked on 25 Oct 2026. The README of each crate is the source.
-
-| Item | Version | Fact the plan uses |
-| --- | --- | --- |
-| Rust | 1.99.1, 13 Oct 2026 | Edition 2024. |
-| `clap` | 4.6.7 | - |
-| `glob` | 0.3.4 | `glob()` iterates lazily and returns `Paths`. A pattern with no wildcards matches literally. `symlink_metadata` does not follow a link, so a broken symbolic link still counts as existing, the way `lexists` did. `MatchOptions::require_literal_leading_dot` makes a pattern skip dot-directories, as Python did. |
-| `walkdir` | 2.5.0 | With `follow_links`, `DirEntry::file_type` returns the target's type, and a symbolic-link loop surfaces as an error entry rather than a descent. |
-| `dirs` | 6.0.0 | `config_dir` applies the XDG rules, including ignoring a relative `XDG_CONFIG_HOME`; `home_dir` falls back to the password entry when `HOME` is unset. |
-| `toml_edit` | 0.25.17 | Parsing a document and editing it in place keeps comments, order and other keys. |
-| `tempfile` | 3.27.0 | `tempdir()` in integration tests. |
-
-These pins are a snapshot. Renovate updates them like any other dependency. A bump that changes a behaviour
-this plan states gets a plan update in the same pull request.
-
-### Files
-
-| Path | Content |
-| --- | --- |
-| `Cargo.toml` | Package `nine-up`, `[[bin]]` name `9up`, edition 2024, version `0.1.0`. The lint policy (below). Dependencies arrive one per build step. |
-| `Cargo.lock` | Generated and committed. |
-| `clippy.toml` | `allow-unwrap-in-tests = true` and `allow-expect-in-tests = true`. |
-| `src/main.rs` | Entry point, the `Cli` struct, the command enum, dispatch, colour, and all output. In Step 1 it renders headers, names, comments and path errors. Report rendering arrives with `update.rs` in Step 2. |
-| `src/sys.rs` | The `App` context, the `Sys` trait and `RealSys`. |
-| `src/config.rs` | The config file: read, normalise, add, delete, clean, save. |
-| `src/discover.rs` | Path expansion, glob expansion, missing-path handling and the depth-limited search. Runs no `git`. |
-| `src/update.rs` | Arrives in Step 2. See Module Breakdown. |
-| `tests/cli.rs` | Integration tests for the binary. |
-| `.editorconfig` | Final newline, UTF-8, LF, trim trailing whitespace. Two-space indent for YAML and Markdown only. Rust follows `cargo fmt`. `*.md`: no trailing-whitespace trim, line length off. |
-| `.gitignore` | `/target/` and `/.scratchpad/`. |
-| `.github/workflows/lint.yaml` | Exists, with the `markdown` job. Step 1 adds the `rust` job. Details under CI Workflows. |
-| `.github/workflows/test.yaml` | A `test` job (`cargo test --locked` on `ubuntu-latest` and `macos-latest`) and a `coverage` job (`cargo llvm-cov --locked` on `ubuntu-latest`). |
-
-The code that follows this plan removes `src/bookmarks.rs`: it is renamed to `src/config.rs` above. In
-`src/sys.rs` the `App` field `bookmark_file` is renamed to `config_file`.
-
-Already in place, unchanged unless a step says otherwise: `rust-toolchain.toml`, the `claude.yaml` and
-`zizmor.yaml` workflows, `mise.toml` (pins node, markdownlint, zizmor and cargo-llvm-cov) and `.markdownlint-cli2.jsonc`.
-`AGENTS.md` is updated (the Feature Spec is the reference; the verify line lists the four checks) and
-`README.md` is updated (Development lists the four checks; the credit says inspired by, not a port). The
-README Usage rewrite is a required change in Step 3: it drops the `gitup` bookmark file, the
-`gitup/bookmarks` path, the `-b` flag and the bookmark wording, and names the TOML config file, the
-`-C`/`--config` flag and the default config path instead. The workflows, `mise.toml` and the
-markdownlint configuration are baseline: they stay, and the steps build on them.
-
-Not added: `rustfmt.toml` (the defaults), `deny.toml`, `.cargo/config.toml`, `build.rs`, a cargo workspace.
-
-### Cargo.toml Policy
-
-```toml
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-all = { level = "warn", priority = -1 }
-unwrap_used = "warn"
-expect_used = "warn"
-dbg_macro = "warn"
-```
-
-- `warn` in the file, and `-D warnings` on the command line turns each warning into an error. The local check
-  and CI match exactly.
-- `unsafe` code is forbidden.
-- Where a lint cannot hold, use `#[allow(...)]` with a comment that gives the reason. `main` returns
-  `std::process::ExitCode`, so no `process::exit` call exists outside it.
-- Output: render functions take a writer (`impl Write`). `main` passes a locked standard output and
-  ignores `BrokenPipe`, so a closed pipe ends the run quietly with the success code. Unit tests pass a
-  `Vec<u8>`.
-
-### Local Checks
-
-Run all four before every commit, and before every push. They are the whole gate.
-
-```sh
-cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-markdownlint-cli2 '**/*.md'
-```
-
-### Clap Notes
+### Command Line
 
 - Derive API. `Cli` is a `Parser` struct with the global config option and an optional subcommand.
   The commands are a `Subcommand` enum: `Update`, `Add`, `Delete`, `List`, `Clean`, `Exec`.
-- The bare form is an argv shim in `main`: when the first positional argument is not a command name,
+- The bare form is an argv shim in `cli.rs`: when the first positional argument is not a command name,
   `update` is inserted after the program name before clap parses. A flattened update struct cannot do
   this, because its path list swallows the command name as a path.
 - The binary name comes from `#[command(name = "9up")]`, because the package name is `nine-up`. Help and
@@ -356,117 +269,44 @@ markdownlint-cli2 '**/*.md'
 - `update`'s `--depth` needs `allow_negative_numbers`, or clap reads `-1` as a flag. `exec` shares the
   depth argument.
 - `add` and `delete` take `num_args(1..)` path lists. `exec` takes optional paths, then
-  `trailing_var_arg` after a required `--`: everything after `--` is the command's argv, untouched.
+  a required `--`: a `last = true` argument collects everything after it as the command's argv, untouched.
 - Path and value fields are `String`, not `PathBuf`: an empty `-C ""` must parse, and it means the default
   path. `PathBuf` rejects empty values at parse time.
 
-### CI Workflows
+### Lints
 
-The baseline workflows stay: `claude.yaml` (Claude review), `zizmor.yaml` (workflow security lint, SARIF
-upload commented out while the repository is private) and `lint.yaml` with its `markdown` job. Step 1 adds
-the Rust jobs, each with `permissions: contents: read` and `persist-credentials: false` on checkout. The Rust
-jobs run the Local Checks commands.
+- `Cargo.toml` sets `all` plus `unwrap_used`, `expect_used` and `dbg_macro` to `warn`, and `unsafe_code` to `forbid`.
+  `-D warnings` on the command line turns each warning into an error, so the local check and CI match.
+- Where a lint cannot hold, use `#[allow(...)]` with a comment that gives the reason.
 
-- `lint.yaml` gains a `rust` job on `ubuntu-latest`: the format check and clippy.
-- `test.yaml` is new: a `test` job on `ubuntu-latest` and `macos-latest` running `cargo test --locked`,
-  and a `coverage` job on `ubuntu-latest` running `cargo llvm-cov --locked`.
+### Output And Errors
 
-Each Rust job installs the toolchain with `rustup` (no argument, so it reads `rust-toolchain.toml`), then uses
-`Swatinem/rust-cache` for the build cache. Actions are pinned to a full commit SHA, with the version in a
-comment.
-
-### Done When
-
-- All four local checks are green, and CI is green.
-- `cargo run -- --version` prints `9up 0.1.0`.
-- `README.md` has three sections: Install ("Not yet. `Cargo.toml` arrives in Step 1." until the crate lands,
-  then the `cargo install --path .` form), Development (the four checks) and Credit. Its Usage section
-  stays until Step 3, where it is rewritten (see Files).
-- The first Renovate run tracks `rust-toolchain.toml` and the crates.
+- `main` returns `std::process::ExitCode`, so no `process::exit` call exists outside it.
+- Render functions take a writer (`impl Write`). `main` passes a locked standard output and ignores
+  `BrokenPipe`, so a closed pipe ends the run quietly with the success code. Unit tests pass a `Vec<u8>`.
 
 ## Module Breakdown
 
-Eight files in `src/`, a flat crate, no `lib.rs`. The architecture is a composition root (owner's
+Eight modules in `src/`, one crate, no `lib.rs`. The architecture is a composition root (owner's
 direction, 26 Oct 2026): `main` builds one `App` context in `sys.rs` — the `Sys` services, the working
-directory, the home directory, the config file (the `config_file` field, renamed from `bookmark_file`),
+directory, the home directory, the config file,
 the colour flag and the output — and passes it down.
 Nothing below `main` reads the environment, calls `dirs`, or builds a service. Path probes (metadata,
 the `.git` layout, the `walkdir` search) work on path values and need no service.
 
-| File | Estimated lines | Contents |
-| --- | --- | --- |
-| `main.rs` | ~85 | The composition root and dispatch. Builds the `App` and hands each command to `commands`. |
-| `cli.rs` | ~140 | `Cli`, `UpdateArgs`, the command enum and the bare-path argv shim. |
-| `commands.rs` | ~165 | The add, delete, list, clean, update and exec flows, and the repository walk they share. Writes through the `App` output. |
-| `render.rs` | ~105 | `paint`, the path headers, and rendering of every report. |
-| `sys.rs` | ~70 | The `App` context, the `Sys` trait (git, exec, file read/write) and `RealSys`. Tests substitute a stub `Sys` to force failures. |
-| `config.rs` | ~90 | The config file's entries, plus `load`, `save`, `normalize`, `has`. No output. |
-| `discover.rs` | ~100 | `expand_home`, `glob_paths`, `resolve` and the depth-limited search. No `git` calls. |
-| `update.rs` | ~260 | `repo_info`, `update_repo`, `exec_repo`, all over the `Sys` seam. No output. |
+| File | Contents |
+| --- | --- |
+| `main.rs` | The composition root and dispatch. Builds the `App` and hands each command to `commands`. |
+| `cli.rs` | `Cli`, `UpdateArgs`, the command enum and the bare-path argv shim. |
+| `commands.rs` | The add, delete, list, clean, update and exec flows, and the repository walk they share. Writes through the `App` output. |
+| `render.rs` | `paint`, the path headers, and rendering of every report. |
+| `sys.rs` | The `App` context, the `Sys` trait (git, exec, file read/write) and `RealSys`. Tests substitute a stub `Sys` to force failures. |
+| `config.rs` | The config file's entries, plus `load`, `save`, `normalize`, `has`. No output. |
+| `discover.rs` | `expand_home`, `glob_paths`, `resolve` and the depth-limited search. No `git` calls. |
+| `update.rs` | `repo_info`, `update_repo`, `exec_repo`, all over the `Sys` seam. No output. |
 
-### Types
-
-```rust
-// discover.rs — Repo carries what discovery can know without git.
-// update.rs asks git (rev-parse) for the working directory when it needs it.
-struct Repo { name: String, path: PathBuf }
-
-enum Resolved {
-    Repos(Vec<Repo>),
-    Comment(String),
-    PathError(String),
-}
-
-// update.rs — a Report carries data only, so milestone 2 can collect
-// reports from many threads and main can render them in path order.
-struct Report { name: String, steps: Vec<Step> }
-
-enum Step {
-    Fetch { remote: String, outcome: FetchOutcome },
-    Branch { name: String, outcome: BranchOutcome },
-    Error(String),
-}
-
-enum FetchOutcome {
-    Changed(Vec<(Kind, Vec<String>)>),
-    UpToDate,
-    NoRefspec,
-    Error(Vec<String>),
-}
-
-enum Kind {
-    NewBranch,
-    NewTag,
-    BranchUpdate,
-}
-
-enum BranchOutcome {
-    Updated { from: String, to: String },
-    UpToDate,
-    Skipped(String),
-    Error(String),
-}
-```
-
-Milestone 2 needs no type change: run `update_repo` on many threads, collect the `Report` values, render in
-order.
-
-## Build Order
-
-One pull request per step, in order. Each pull request ends with all four local checks green.
-
-| Step | Content | Crates that arrive |
-| --- | --- | --- |
-| 1 | Crate, lint policy, CI, `Cli` with the config commands, `config.rs`, `discover.rs`. The config commands work. Discovery prints headers, names, comments and path errors. | `clap`, `glob`, `walkdir`, `dirs`, `toml_edit`, `tempfile` |
-| 2 | `update.rs`: `run`, `repo_info`, remotes, fetch, branch logic, and the `update` command with its options. Reports replace the name list under each header. | none |
-| 3 | The `exec` command, the feature check and release prep. | none |
-
-Step 3 in detail: the feature check. Build one fixture directory tree with repositories in known states
-(ahead, behind, diverged, no upstream, bare). Make two copies. Run Python `gitup` on one copy and `9up` on
-the other, with equivalent invocations. Compare the result, not the text: the branch positions, the
-paths listed in each tool's state file, and the exit codes must match. The state files themselves do
-not match: the formats differ by design. Then finish the README: usage, the commands, and the
-`cargo install --path .` line.
+A `Report` carries data only. Milestone 2 needs no type change: run `update_repo` on many threads, collect the
+`Report` values, render in order.
 
 ## Tests
 
@@ -476,13 +316,13 @@ the reason), never the exact wording, so a wording change does not rewrite the s
 Three layers:
 
 - Unit tests inside each `src` file, for the pure parts: path normalisation, the reference-line reading in
-  `update.rs`, and report rendering in `main.rs`.
+  `update.rs`, and report rendering in `render.rs`.
 - Integration tests in `tests/cli.rs`, which run the compiled binary in temporary directories with real `git`
-  repositories. The fixtures run `git init -b main` and local file-path remotes, so the suite needs no network.
+  repositories. The fixtures use local file-path remotes, so the suite needs no network.
 - `tests/cli.rs` sets `HOME` to a temporary directory and passes `-C` with an explicit path, so no test reads
-  the developer's real config file. Colour is off in tests (not a terminal). Set `GIT_CONFIG_NOSYSTEM=1` and
-  pass `-c init.defaultBranch=main` where a fixture needs it, so a developer's global git configuration cannot
-  change a result.
+  the developer's real config file. Colour is off in tests (not a terminal). The fixtures run `git init -b main`, and the commit
+  helper sets `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, so a developer's git configuration
+  (signing, hooks) cannot change a result.
 
 Behaviour tables, one row per case:
 
