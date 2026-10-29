@@ -34,14 +34,8 @@ repositories = [
 
 ### Config file
 
-The default path depends on the platform:
-
-| Platform    | Default path                                                         |
-|-------------|----------------------------------------------------------------------|
-| Linux, etc. | `$XDG_CONFIG_HOME/9up/config.toml`, else `~/.config/9up/config.toml` |
-| macOS       | `~/Library/Application Support/9up/config.toml`                      |
-
-On Linux, an unset, empty or relative `XDG_CONFIG_HOME` is ignored.
+The default is `$XDG_CONFIG_HOME/9up/config.toml`, else `~/.config/9up/config.toml`, on every platform,
+macOS included. A relative or empty `XDG_CONFIG_HOME` is ignored.
 
 - `-C`/`--config <path>` uses a different file. `-C ""` means the default.
 - Other keys in the file are left alone.

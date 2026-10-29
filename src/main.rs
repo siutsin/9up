@@ -42,12 +42,17 @@ fn main() -> ExitCode {
             }
         },
     };
-    let config_dir = dirs::config_dir();
+    // XDG on every platform, macOS included: an absolute `XDG_CONFIG_HOME`, else `~/.config`.
+    let home = dirs::home_dir();
+    let config_dir = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| home.as_ref().map(|home| home.join(".config")));
     let config_file = config::file_path(cli.config_file.as_deref(), config_dir.as_deref());
     let mut app = App {
         sys: Box::new(RealSys),
         cwd,
-        home: dirs::home_dir(),
+        home,
         config_file,
         colour: io::stdout().is_terminal(),
         out: &mut out,

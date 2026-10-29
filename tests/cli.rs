@@ -742,18 +742,12 @@ fn exec_depth_limits_the_search() {
     assert!(text.contains("a/two"), "{text}");
 }
 
-/// Guards the default config path; an invalid `XDG_CONFIG_HOME` or empty `-C` falls back to it.
+/// Guards the default config path: an absolute `XDG_CONFIG_HOME` wins on every platform; a relative or
+/// empty one, or an empty `-C`, falls back to `~/.config`.
 #[test]
-fn default_config_path_ignores_relative_and_empty_xdg_config_home() {
+fn default_config_path_follows_xdg_config_home_only_when_absolute() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().to_str().unwrap();
-    // `dirs` picks the XDG path on Linux; macOS uses Application Support and ignores
-    // `XDG_CONFIG_HOME`.
-    #[cfg(target_os = "macos")]
-    let default_file = dir
-        .path()
-        .join("Library/Application Support/9up/config.toml");
-    #[cfg(not(target_os = "macos"))]
     let default_file = dir.path().join(".config/9up/config.toml");
     fs::create_dir_all(default_file.parent().unwrap()).unwrap();
     fs::write(&default_file, "repositories = [\"/from-default\"]\n").unwrap();
@@ -781,6 +775,20 @@ fn default_config_path_ignores_relative_and_empty_xdg_config_home() {
             stdout(&out)
         );
     }
+
+    let xdg = dir.path().join("xdg");
+    fs::create_dir_all(xdg.join("9up")).unwrap();
+    fs::write(
+        xdg.join("9up/config.toml"),
+        "repositories = [\"/from-xdg\"]\n",
+    )
+    .unwrap();
+    let out = nine_up_env(
+        dir.path(),
+        &["list"],
+        &[("HOME", home), ("XDG_CONFIG_HOME", xdg.to_str().unwrap())],
+    );
+    assert!(stdout(&out).contains("/from-xdg"), "{}", stdout(&out));
 }
 
 /// Guards config edits; user comments and unknown keys must survive `add` and `delete`.

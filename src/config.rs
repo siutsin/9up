@@ -5,14 +5,13 @@ use toml_edit::{Array, DocumentMut, Item, Value};
 
 use crate::sys::Sys;
 
-/// The config file: a non-empty `-C` path wins, else `9up/config.toml` under the platform
-/// config directory, or under `.config` when the platform has none.
+/// The config file: a non-empty `-C` path wins, else `9up/config.toml` under the config
+/// directory, or under a relative `.config` when there is no home directory.
 pub fn file_path(flag: Option<&str>, config_dir: Option<&Path>) -> PathBuf {
     if let Some(path) = flag.filter(|path| !path.is_empty()) {
         return PathBuf::from(path);
     }
-    // `config_dir` comes from `dirs` (see main), which on Linux ignores a relative
-    // XDG_CONFIG_HOME, as the specification requires. None falls back to `.config`.
+    // `config_dir` comes from `main`: an absolute `XDG_CONFIG_HOME`, else `~/.config`.
     let config = config_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(".config"));

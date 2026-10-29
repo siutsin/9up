@@ -146,13 +146,11 @@ gets colour codes.
 key, `repositories`: an array of path strings, in order. Any other keys are left alone, for settings that may
 come later.
 
-The default path sits under the platform config directory (the `dirs` crate), in a `9up` directory:
-`$XDG_CONFIG_HOME/9up/config.toml`, or `~/.config/9up/config.toml` when the variable is unset or empty. A
-relative value is ignored, as the XDG specification requires. A non-UTF-8 absolute `XDG_CONFIG_HOME` is
-accepted. On macOS the platform directory is `~/Library/Application Support`, so the file is
-`~/Library/Application Support/9up/config.toml`, and `XDG_CONFIG_HOME` is not consulted. `-C ""` also uses
-the default path. When `dirs::config_dir()` returns no directory at all, the fallback is a relative
-`.config/9up/config.toml` path.
+The default path is `$XDG_CONFIG_HOME/9up/config.toml`, or `~/.config/9up/config.toml` when the variable is
+unset or empty, on every platform, macOS included (`main` reads the variable, not the `dirs` crate: its macOS
+directory is `~/Library/Application Support`, which the owner chose not to use). A relative value is ignored,
+as the XDG specification requires. A non-UTF-8 absolute `XDG_CONFIG_HOME` is accepted. `-C ""` also uses
+the default path. With no home directory at all, the fallback is a relative `.config/9up/config.toml` path.
 
 - Read: parse the file as TOML (the `toml_edit` crate). A missing or unreadable file means no repositories.
   A file that is not valid TOML, a file whose content is not valid UTF-8, or a `repositories` value that
@@ -246,7 +244,7 @@ this plan states gets a plan update in the same pull request.
 | `clap` (derive feature) | Parse the command line: a `Parser` struct with a `Subcommand` enum. |
 | `glob` | Expand the glob patterns that a configured path can contain, with `require_literal_leading_dot` set, as Python skipped dot entries. |
 | `walkdir` | The depth-limited directory search in `discover.rs`: symbolic links followed, loop detection. Order comes from `repos.sort_by(name)` in `resolve()`, not from `WalkDir`, which is unsorted. |
-| `dirs` | The platform config and home directories: the XDG rules for the default config path, and the home lookup behind `~` expansion. |
+| `dirs` | The home directory: the lookup behind `~` expansion and the `~/.config` default. |
 | `toml_edit` | The config file: parse the TOML document and edit it in place, changing only the `repositories` array. |
 | `tempfile` (development only) | Temporary directories in integration tests. |
 
