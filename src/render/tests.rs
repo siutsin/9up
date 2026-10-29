@@ -61,24 +61,6 @@ fn paint_wraps_the_text_in_the_codes_when_enabled() {
     assert_eq!(paint(false, RED, "x"), "x");
 }
 
-/// A writer refusing the fetch-skip line, so a render fails midway, not on its first line.
-struct SkipLineRefusingWriter;
-
-impl Write for SkipLineRefusingWriter {
-    /// Fail only on the refspec line, so the error comes from a later step, not the name line.
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if String::from_utf8_lossy(buf).contains("refspec") {
-            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed"));
-        }
-        Ok(buf.len())
-    }
-
-    /// Flush succeeds, so a failure always comes from a write.
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 /// Guards the wording of the fetch, branch and error lines; users read them every run.
 #[test]
 fn render_report_prints_fetch_and_branch_lines() {
@@ -271,6 +253,6 @@ fn render_report_reports_a_failed_write() {
             outcome: update::FetchOutcome::NoRefspec,
         }],
     };
-    let mut out = SkipLineRefusingWriter;
+    let mut out = LineRefusingWriter { needle: "refspec" };
     assert!(render_report(&report, false, &mut out).is_err());
 }

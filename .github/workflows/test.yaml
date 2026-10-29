@@ -8,12 +8,12 @@ on:
     branches:
       - master
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
-
-    permissions:
-      contents: read
 
     strategy:
       matrix:
@@ -39,9 +39,6 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: read
-
     steps:
       - name: Clone the code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,9 +61,6 @@ jobs:
 
   branch-coverage:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
 
     # Report only: branch coverage needs a nightly toolchain, and a nightly
     # wobble must never fail a pull request.

@@ -43,7 +43,7 @@ fn main() -> ExitCode {
         },
     };
     // XDG on every platform, macOS included: an absolute `XDG_CONFIG_HOME`, else `~/.config`.
-    let home = dirs::home_dir();
+    let home = env::home_dir();
     let xdg = env::var_os("XDG_CONFIG_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);

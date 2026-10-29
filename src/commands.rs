@@ -7,40 +7,43 @@ use crate::sys::App;
 use crate::{config, discover, update};
 
 /// Normalise each path before the check, so no repository is stored twice under two spellings.
+/// Report lines are buffered and printed only after the save, so a failed save prints nothing.
 pub(crate) fn add(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
-    let out = &mut *app.out;
     let mut entries = config::load(&*app.sys, &app.config_file)?;
+    let mut lines = String::new();
     for raw in paths {
         let normalized = config::normalize(raw, &app.cwd);
         if entries.contains(&normalized) {
-            writeln!(out, "{normalized} is already in the config file.")?;
+            lines.push_str(&format!("{normalized} is already in the config file.\n"));
         } else {
-            writeln!(out, "Added {normalized}.")?;
+            lines.push_str(&format!("Added {normalized}.\n"));
             entries.push(normalized);
         }
     }
     config::save(&*app.sys, &app.config_file, &entries)?;
+    app.out.write_all(lines.as_bytes())?;
     Ok(ExitCode::SUCCESS)
 }
 
 /// Save only on a change, so deleting unknown paths leaves the config file untouched.
 pub(crate) fn delete(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
-    let out = &mut *app.out;
     let mut entries = config::load(&*app.sys, &app.config_file)?;
+    let mut lines = String::new();
     let mut changed = false;
     for raw in paths {
         let normalized = config::normalize(raw, &app.cwd);
         if let Some(index) = entries.iter().position(|entry| entry == &normalized) {
             entries.remove(index);
             changed = true;
-            writeln!(out, "Deleted {normalized}.")?;
+            lines.push_str(&format!("Deleted {normalized}.\n"));
         } else {
-            writeln!(out, "{normalized} is not in the config file.")?;
+            lines.push_str(&format!("{normalized} is not in the config file.\n"));
         }
     }
     if changed {
         config::save(&*app.sys, &app.config_file, &entries)?;
     }
+    app.out.write_all(lines.as_bytes())?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -93,6 +96,7 @@ pub(crate) fn clean(app: &mut App) -> io::Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     let mut kept = Vec::new();
+    let mut lines = String::new();
     let mut removed = false;
     for entry in &entries {
         // A comment entry is not a path the liveness test can judge; the plan keeps it.
@@ -105,11 +109,12 @@ pub(crate) fn clean(app: &mut App) -> io::Result<ExitCode> {
             kept.push(entry.clone());
         } else {
             removed = true;
-            writeln!(out, "Removed {entry}.")?;
+            lines.push_str(&format!("Removed {entry}.\n"));
         }
     }
     if removed {
         config::save(&*app.sys, &app.config_file, &kept)?;
+        app.out.write_all(lines.as_bytes())?;
     } else {
         writeln!(out, "Nothing to clean.")?;
     }
@@ -156,15 +161,14 @@ fn for_each_repo(
     for input in inputs {
         match discover::resolve(input, &app.cwd, app.home.as_deref(), depth) {
             discover::Resolved::Repos(repos) => {
-                let printed = print_header(
+                print_header(
                     &mut *app.out,
                     app.colour,
                     input,
                     app.home.as_deref(),
                     &app.cwd,
                     repos.len(),
-                );
-                printed?;
+                )?;
                 for repo in &repos {
                     op(app, repo)?;
                 }

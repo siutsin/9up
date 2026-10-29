@@ -7,88 +7,41 @@ fn cwd() -> &'static Path {
     Path::new("/work")
 }
 
-/// A system with one in-memory file and a failing write. The path is not on disk, so a passing
-/// read proves the call went through the seam.
-struct MemorySys;
-
-impl Sys for MemorySys {
-    /// Serve one entry from memory, so a passing `load` proves it used the seam.
-    fn read(&self, _path: &Path) -> io::Result<Vec<u8>> {
-        Ok(b"repositories = [\"/a\"]\n".to_vec())
-    }
-
-    /// Deny every write, so `save` must return the error.
-    fn write(&self, _path: &Path, _contents: &[u8]) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"))
-    }
+/// A system with a fixed read result and a write that can be set to fail, so each test
+/// picks the seam behaviour it needs. The path is not on disk, so a passing read proves
+/// the call went through the seam.
+struct FakeSys {
+    read: io::Result<Vec<u8>>,
+    write_fails: bool,
 }
 
-/// A system that denies reads and accepts writes: `save` must fail, not overwrite the file unseen.
-struct DenyReadSys;
-
-impl Sys for DenyReadSys {
-    /// Deny the read with an error other than not found, so `save` must stop.
+impl Sys for FakeSys {
+    /// Serve the fixed result; a stored error is rebuilt, as `io::Error` is not cloneable.
     fn read(&self, _path: &Path) -> io::Result<Vec<u8>> {
-        Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"))
+        match &self.read {
+            Ok(bytes) => Ok(bytes.clone()),
+            Err(err) => Err(io::Error::new(err.kind(), err.to_string())),
+        }
     }
 
-    /// Accept the write, so only the read can make `save` fail.
+    /// Fail only when the test set the flag, so a read failure is never a write failure in disguise.
     fn write(&self, _path: &Path, _contents: &[u8]) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-/// A system whose file holds text that is not valid TOML.
-struct GarbledSys;
-
-impl Sys for GarbledSys {
-    /// Serve invalid TOML, so `save` meets a parse error on the existing file.
-    fn read(&self, _path: &Path) -> io::Result<Vec<u8>> {
-        Ok(b"repositories = [\n".to_vec())
-    }
-
-    /// Accept the write, so only the parse can make `save` fail.
-    fn write(&self, _path: &Path, _contents: &[u8]) -> io::Result<()> {
-        Ok(())
+        if self.write_fails {
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"))
+        } else {
+            Ok(())
+        }
     }
 }
 
 /// Guards that `save` refuses a broken file; overwriting it would lose the user's content.
 #[test]
 fn save_fails_on_an_unparseable_existing_file() {
-    assert!(save(&GarbledSys, Path::new("/x/config.toml"), &[]).is_err());
-}
-
-/// Guards the indent of a rescued comment, so moved comments line up in the array.
-#[test]
-fn join_reuses_the_indent_of_the_comment_head() {
-    assert_eq!(join("  # note", "rest"), "  # note\n  rest");
-    assert_eq!(join("# note", "rest"), "# note\n    rest");
-}
-
-/// Guards that a removed entry's trailing comment moves back a line; it is not lost.
-#[test]
-fn save_moves_a_removed_comment_back_to_the_previous_entry() {
-    let (text, kept) = run_save(
-        "repositories = [\n    \"/a\",\n    \"/b\", # note\n]\n",
-        &["/a"],
-    );
-    assert_eq!(kept, ["/a"]);
-    assert_eq!(text, "repositories = [\n    \"/a\", # note\n]\n");
-}
-
-/// Guards that a removed entry's comment moves forward when the previous entry already
-/// carries a comment of its own; neither note is lost. Both notes sit before the comma,
-/// where a value's suffix holds them.
-#[test]
-fn save_moves_a_removed_comment_forward_when_the_previous_entry_has_one() {
-    let (text, kept) = run_save(
-        "repositories = [\n    \"/a\" # first note\n    ,\n    \"/b\" # second note\n    ,\n    \"/c\",\n]\n",
-        &["/a", "/c"],
-    );
-    assert_eq!(kept, ["/a", "/c"]);
-    assert_eq!(text.matches("# first note").count(), 1, "{text}");
-    assert_eq!(text.matches("# second note").count(), 1, "{text}");
+    let sys = FakeSys {
+        read: Ok(b"repositories = [\n".to_vec()),
+        write_fails: false,
+    };
+    assert!(save(&sys, Path::new("/x/config.toml"), &[]).is_err());
 }
 
 /// Guards that saving no entries into a file without the key writes an empty array.
@@ -99,27 +52,34 @@ fn save_writes_an_empty_array_when_the_key_is_missing() {
     assert!(kept.is_empty());
 }
 
-/// Guards that a denied read stops `save`; the file's other keys survive.
+/// Guards that a denied read stops `save`, names the file, and the file's other keys survive.
 #[test]
 fn save_does_not_overwrite_a_file_it_cannot_read() {
-    assert!(save(&DenyReadSys, Path::new("/x/config.toml"), &[]).is_err());
+    let sys = FakeSys {
+        read: Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied")),
+        write_fails: false,
+    };
+    let err = save(&sys, Path::new("/x/config.toml"), &[]).unwrap_err();
+    assert!(
+        err.to_string().contains("cannot read /x/config.toml"),
+        "{err}"
+    );
 }
 
-/// Guards the `DenyReadSys` fixture, so the test above cannot pass for the wrong reason.
-#[test]
-fn the_deny_read_fixture_would_let_a_write_through() {
-    // The fixture's point: only its read fails, so the test above proves save stops at the read.
-    assert!(DenyReadSys.write(Path::new("/x"), b"").is_ok());
-}
-
-/// Guards that `load` and `save` go through `Sys`, so tests can swap in a fake.
+/// Guards that `load` and `save` go through `Sys`, so tests can swap in a fake, and that
+/// a failed write names the file it could not write.
 #[test]
 fn load_reads_through_the_seam_and_a_failed_write_is_an_error() {
-    assert_eq!(
-        load(&MemorySys, Path::new("/x/config.toml")).unwrap(),
-        ["/a"]
+    let sys = FakeSys {
+        read: Ok(b"repositories = [\"/a\"]\n".to_vec()),
+        write_fails: true,
+    };
+    assert_eq!(load(&sys, Path::new("/x/config.toml")).unwrap(), ["/a"]);
+    let err = save(&sys, Path::new("/x/config.toml"), &["/a".to_owned()]).unwrap_err();
+    assert!(
+        err.to_string().contains("cannot write /x/config.toml"),
+        "{err}"
     );
-    assert!(save(&MemorySys, Path::new("/x/config.toml"), &["/a".to_owned()]).is_err());
 }
 
 /// Guards that a missing config means no repositories; a first run is not an error.
@@ -185,7 +145,8 @@ fn run_save(seed: &str, entries: &[&str]) -> (String, Vec<String>) {
     )
 }
 
-/// Guards that deleting or appending entries keeps every array comment once.
+/// Guards that deleting or appending entries keeps a kept entry's comments; a removed
+/// entry's own comments go with it, as they are part of its decor.
 #[test]
 fn save_keeps_comments_inside_the_array() {
     let seed = "repositories = [\n    # the main one\n    \"/a\", # trailing note\n    \"/b\",\n    \"/c\",\n]\n";
@@ -195,88 +156,86 @@ fn save_keeps_comments_inside_the_array() {
     assert!(text.contains("# trailing note"), "{text}");
     assert_eq!(loaded, ["/a", "/b", "/d"]);
 
-    // Delete the middle entry: the note trailing /a is stored on /b and must move, not vanish.
+    // Delete the middle entry: the note trailing /a is stored on /b, so it goes with /b.
     let (text, loaded) = run_save(seed, &["/a", "/c"]);
-    assert_eq!(text.matches("# trailing note").count(), 1, "{text}");
+    assert_eq!(text.matches("# the main one").count(), 1, "{text}");
+    assert!(!text.contains("# trailing note"), "{text}");
     assert_eq!(loaded, ["/a", "/c"]);
 
-    // Delete the first entry: its leading comment stays in place.
+    // Delete the first entry: its leading comment goes with it; /b's note stays.
     let (text, loaded) = run_save(seed, &["/b", "/c"]);
-    assert_eq!(text.matches("# the main one").count(), 1, "{text}");
+    assert!(!text.contains("# the main one"), "{text}");
+    assert_eq!(text.matches("# trailing note").count(), 1, "{text}");
     assert_eq!(loaded, ["/b", "/c"]);
 }
 
-/// Guards comments in awkward spots around removed entries; user notes are not lost.
+/// Guards comments in awkward spots around removed entries: the array's trailing text
+/// stays, a removed entry's own comments go with it, and an append keeps the last
+/// entry's trailing comment in place.
 #[test]
 fn save_keeps_comments_around_removed_entries() {
-    let cases: [(&str, &[&str], &str); 4] = [
-        // A comment after the last entry, before its missing comma.
-        (
-            "repositories = [\n    \"/a\",\n    \"/b\" # tail note\n]\n",
-            &["/a"],
-            "# tail note",
-        ),
-        // A comment after a middle entry, its comma on the next line.
-        (
-            "repositories = [\n    \"/a\" # mid note\n    ,\n    \"/b\",\n]\n",
-            &["/b"],
-            "# mid note",
-        ),
-        // The last entry has a comment above it and one after it.
-        (
-            "repositories = [\n    \"/a\",\n    # above third\n    \"/c\", # trailing gamma\n]\n",
-            &["/a"],
-            "# above third",
-        ),
-        // Appending must not move the last entry's trailing comment.
-        (
-            "repositories = [\n    \"/a\", # trailing a\n]\n",
-            &["/a", "/b"],
-            "# trailing a",
-        ),
-    ];
-    for (seed, entries, comment) in cases {
-        let (text, loaded) = run_save(seed, entries);
-        assert_eq!(text.matches(comment).count(), 1, "{text}");
-        assert_eq!(loaded, entries, "{text}");
-    }
-    // The third case carries a second comment; check it separately.
-    let (text, _) = run_save(
+    // A comment after the last entry's comma sits in the trailing text and stays.
+    let (text, loaded) = run_save(
+        "repositories = [\n    \"/a\",\n    \"/b\", # tail note\n]\n",
+        &["/a"],
+    );
+    assert_eq!(text.matches("# tail note").count(), 1, "{text}");
+    assert_eq!(loaded, ["/a"]);
+
+    // A comment in a removed entry's suffix goes with it.
+    let (text, loaded) = run_save(
+        "repositories = [\n    \"/a\" # mid note\n    ,\n    \"/b\",\n]\n",
+        &["/b"],
+    );
+    assert!(!text.contains("# mid note"), "{text}");
+    assert_eq!(loaded, ["/b"]);
+
+    // The last entry has a comment above it (its own prefix: it goes) and one after its
+    // comma (the array's trailing text: it stays).
+    let (text, loaded) = run_save(
         "repositories = [\n    \"/a\",\n    # above third\n    \"/c\", # trailing gamma\n]\n",
         &["/a"],
     );
+    assert!(!text.contains("# above third"), "{text}");
     assert_eq!(text.matches("# trailing gamma").count(), 1, "{text}");
-    assert!(
-        text.contains("# above third\n    # trailing gamma"),
-        "{text}"
+    assert_eq!(loaded, ["/a"]);
+
+    // Appending must not move the last entry's trailing comment.
+    let (text, loaded) = run_save(
+        "repositories = [\n    \"/a\", # trailing a\n]\n",
+        &["/a", "/b"],
     );
+    assert_eq!(text.matches("# trailing a").count(), 1, "{text}");
+    assert_eq!(loaded, ["/a", "/b"]);
 }
 
-/// Guards that removing the last or only entry keeps the comments around it.
+/// Guards that removing the last or only entry leaves a valid, unglued file; the removed
+/// entry's own comments go with it.
 #[test]
 fn save_keeps_comments_when_the_last_entry_goes() {
-    // No trailing comma, a comment above the removed entry.
+    // No trailing comma, a comment above the removed entry: `]` keeps its own line.
     let (text, loaded) = run_save(
         "repositories = [\n    \"/a\",\n    # above b\n    \"/b\"\n]\n",
         &["/a"],
     );
-    assert!(text.contains("# above b"), "{text}");
+    assert_eq!(text, "repositories = [\n    \"/a\"\n]\n");
     assert_eq!(loaded, ["/a"]);
 
-    // A comment on its own line before the closing bracket.
+    // A comment on its own line before the closing bracket is part of the last
+    // entry's suffix when there is no trailing comma, so it goes with that entry.
     let (text, loaded) = run_save(
         "repositories = [\n    \"/a\",\n    \"/b\"\n    # before bracket\n]\n",
         &["/a"],
     );
-    assert!(text.contains("# before bracket"), "{text}");
+    assert!(!text.contains("# before bracket"), "{text}");
     assert_eq!(loaded, ["/a"]);
 
-    // The only entry goes; its comment stays in the empty array.
+    // The only entry goes; its comment goes with it and the array is empty.
     let (text, loaded) = run_save(
         "repositories = [\n    # above only\n    \"/only\"\n]\n",
         &[],
     );
-    assert!(text.contains("# above only"), "{text}");
+    assert_eq!(text, "repositories = []\n");
     assert!(loaded.is_empty());
 }
 
@@ -285,6 +244,43 @@ fn save_keeps_comments_when_the_last_entry_goes() {
 fn save_removes_the_first_of_interleaved_duplicates() {
     let (_, loaded) = run_save("repositories = [\"/a\", \"/b\", \"/a\"]\n", &["/b", "/a"]);
     assert_eq!(loaded, ["/b", "/a"]);
+}
+
+/// Guards that removing a value with a trailing comment from an inline array stays
+/// valid: the comment is part of the removed value's decor and goes with it.
+#[test]
+fn save_removes_an_inline_trailing_comment_with_its_entry() {
+    let (text, kept) = run_save("repositories = [\"/a\", \"/b\" # note\n]\n", &["/a"]);
+    assert_eq!(text, "repositories = [\"/a\"]\n");
+    assert_eq!(kept, ["/a"]);
+}
+
+/// Guards that appending to the layout `save` itself writes (no trailing comma on the
+/// last entry) keeps one entry per line, and a second append does not degrade it.
+#[test]
+fn save_appends_cleanly_to_its_own_layout() {
+    let seed = "repositories = [\n    \"/a\",\n    \"/b\"\n]\n";
+    let (text, loaded) = run_save(seed, &["/a", "/b", "/c"]);
+    assert_eq!(
+        text,
+        "repositories = [\n    \"/a\",\n    \"/b\",\n    \"/c\"\n]\n"
+    );
+    assert_eq!(loaded, ["/a", "/b", "/c"]);
+    let (text, loaded) = run_save(&text, &["/a", "/b", "/c", "/d"]);
+    assert_eq!(
+        text,
+        "repositories = [\n    \"/a\",\n    \"/b\",\n    \"/c\",\n    \"/d\"\n]\n"
+    );
+    assert_eq!(loaded, ["/a", "/b", "/c", "/d"]);
+}
+
+/// Guards that a delete and an append in one save keep the one-entry-per-line layout.
+#[test]
+fn save_appends_cleanly_after_a_delete() {
+    let seed = "repositories = [\n    \"/a\",\n    \"/b\"\n]\n";
+    let (text, loaded) = run_save(seed, &["/a", "/c"]);
+    assert_eq!(text, "repositories = [\n    \"/a\",\n    \"/c\"\n]\n");
+    assert_eq!(loaded, ["/a", "/c"]);
 }
 
 /// Guards that adding to an empty array keeps its lone comment.
@@ -388,4 +384,44 @@ fn file_path_uses_the_flag_then_the_platform_directory() {
         file_path(Some(""), Some(Path::new("/cfg"))),
         PathBuf::from("/cfg/9up/config.toml")
     );
+}
+
+/// Guards the append break move on a single-line array: the last entry's suffix holds
+/// the break and the array trailing is empty, so the break must move to the trailing
+/// text or the appended comma strands on its own line.
+#[test]
+fn save_appends_cleanly_when_the_break_sits_in_the_last_suffix() {
+    let (text, loaded) = run_save("repositories = [\"/a\", \"/b\"\n]\n", &["/a", "/b", "/c"]);
+    assert_eq!(text, "repositories = [\"/a\", \"/b\", \"/c\"\n]\n");
+    assert_eq!(loaded, ["/a", "/b", "/c"]);
+}
+
+/// Guards the same move when the array already has trailing text: the suffix is
+/// cleared, but the trailing text is the array's own and stays untouched.
+#[test]
+fn save_appends_with_trailing_text_present() {
+    let (text, loaded) = run_save(
+        "repositories = [\n    \"/a\",\n    \"/b\"\n,\n]\n",
+        &["/a", "/b", "/c"],
+    );
+    assert_eq!(loaded, ["/a", "/b", "/c"]);
+    assert!(text.contains("\"/b\",\n"), "{text}");
+    assert!(!text.contains("\n,"), "{text}");
+}
+
+/// Guards the scoped exception in the plan: with a trailing comment on the last
+/// entry and no trailing comma, the break move must not run (the comment would
+/// swallow the separator), so the appended comma lands on its own line. The file
+/// stays valid and the comment survives.
+#[test]
+fn save_appends_past_a_comment_in_the_last_suffix() {
+    let (text, loaded) = run_save(
+        "repositories = [\n    \"/a\",\n    \"/b\" # note no comma\n]\n",
+        &["/a", "/b", "/c"],
+    );
+    assert_eq!(
+        text,
+        "repositories = [\n    \"/a\",\n    \"/b\" # note no comma\n,\n    \"/c\"\n]\n"
+    );
+    assert_eq!(loaded, ["/a", "/b", "/c"]);
 }
