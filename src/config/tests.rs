@@ -77,6 +77,28 @@ fn save_moves_a_removed_comment_back_to_the_previous_entry() {
     assert_eq!(text, "repositories = [\n    \"/a\", # note\n]\n");
 }
 
+/// Guards that a removed entry's comment moves forward when the previous entry already
+/// carries a comment of its own; neither note is lost. Both notes sit before the comma,
+/// where a value's suffix holds them.
+#[test]
+fn save_moves_a_removed_comment_forward_when_the_previous_entry_has_one() {
+    let (text, kept) = run_save(
+        "repositories = [\n    \"/a\" # first note\n    ,\n    \"/b\" # second note\n    ,\n    \"/c\",\n]\n",
+        &["/a", "/c"],
+    );
+    assert_eq!(kept, ["/a", "/c"]);
+    assert_eq!(text.matches("# first note").count(), 1, "{text}");
+    assert_eq!(text.matches("# second note").count(), 1, "{text}");
+}
+
+/// Guards that saving no entries into a file without the key writes an empty array.
+#[test]
+fn save_writes_an_empty_array_when_the_key_is_missing() {
+    let (text, kept) = run_save("other = 1\n", &[]);
+    assert!(text.contains("repositories = []"), "{text}");
+    assert!(kept.is_empty());
+}
+
 /// Guards that a denied read stops `save`; the file's other keys survive.
 #[test]
 fn save_does_not_overwrite_a_file_it_cannot_read() {

@@ -207,9 +207,12 @@ write (which also exits 1).
 ### Git Backend
 
 9up runs the `git` binary as a child process. It does not use `libgit2` (the `git2` crate) and does not parse
-pack files. The binary honours the user's own git setup (aliases, credentials, signing, hooks, `includeIf`
-rules) because real `git` runs, its behaviour matches the git the user runs by hand, and its failure text is
-git's own words, which the user can search for.
+pack files. The binary honours the user's own global and system git setup (aliases, credentials, signing,
+`includeIf` rules) because real `git` runs, its behaviour matches the git the user runs by hand, and its
+failure text is git's own words, which the user can search for. Four repository-level keys are the
+exception: every call sets `protocol.ext.allow` to `never` and overrides `core.sshCommand`,
+`core.fsmonitor` and `core.hooksPath`, and inherited `GIT_*` environment state is scrubbed, because a
+discovered repository's config must not run commands during fetch and merge.
 
 `git` must be on the `PATH` at version 2.41 or later. Porcelain output (machine-readable output that does not
 change between releases) only, and never the human progress output. Every call goes through the `Sys`
@@ -236,9 +239,10 @@ otherwise.
 
 ### Dependencies
 
-Five crates, plus one for tests. The standard library covers the rest. Every version is pinned exactly (`=` in `Cargo.toml`), so each
-update arrives as a Renovate pull request instead of drifting inside a range. A bump that changes a behaviour
-this plan states gets a plan update in the same pull request.
+Five crates, plus one for tests and one for the coverage tooling. The standard library covers the rest.
+Every version is pinned exactly (`=` in `Cargo.toml`), so each update arrives as a Renovate pull request
+instead of drifting inside a range. A bump that changes a behaviour this plan states gets a plan update
+in the same pull request.
 
 | Crate | Use |
 | --- | --- |
@@ -248,6 +252,7 @@ this plan states gets a plan update in the same pull request.
 | `dirs` | The home directory: the lookup behind `~` expansion and the `~/.config` default. |
 | `toml_edit` | The config file: parse the TOML document and edit it in place, changing only the `repositories` array. |
 | `tempfile` (development only) | Temporary directories in integration tests. |
+| `serde_json` (xtask only) | Read the coverage export in the `xtask` checker. Never linked into the shipped binary. |
 
 What the standard library covers here: the colour constants (a few string constants, written by hand), the
 error type (`io::Error` and `io::Result`), the lexical path normalisation (a short function over path
@@ -326,9 +331,11 @@ Three layers:
   helper sets `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, so a developer's git configuration
   (signing, hooks) cannot change a result.
 
-Coverage is a gate. `mise run coverage` runs `cargo llvm-cov` with the `tests.rs` files filtered out by name and
-fails under 100 percent line coverage of the production code. Replace the filter with `#[coverage(off)]` on the
-test modules once that attribute is stable.
+Coverage is a gate. `mise run coverage` exports the coverage data with `cargo llvm-cov` and the
+`xtask` checker fails the run unless one test run covers every production function in full: every
+code region of the function executed. Test code never counts toward it: the export drops the
+`tests.rs` files by name, and the checker only accepts functions in production files. Replace the
+name filter with `#[coverage(off)]` on the test modules once that attribute is stable.
 
 Behaviour tables, one row per case:
 

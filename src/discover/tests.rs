@@ -196,6 +196,21 @@ fn search_skips_files_and_git_directories_and_names_the_root() {
     assert_eq!(found[0].name, "repo");
 }
 
+/// Guards that a glob match on a broken symbolic link is searched and finds nothing; the
+/// link has no canonical path, so the search keys it by its own path.
+#[cfg(unix)]
+#[test]
+fn a_glob_matching_a_broken_symbolic_link_finds_no_repositories() {
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("dangling");
+    std::os::unix::fs::symlink(dir.path().join("missing"), &link).unwrap();
+    let pattern = format!("{}/dangling*", dir.path().display());
+    match resolve(&pattern, dir.path(), None, 3) {
+        Resolved::Repos(repos) => assert!(repos.is_empty()),
+        _ => panic!("not repos"),
+    }
+}
+
 /// Guards that a `**` glob does not list a repository twice.
 #[test]
 fn a_double_star_glob_lists_each_repository_once() {
@@ -232,6 +247,77 @@ fn a_symbolic_link_cycle_terminates() {
     }
     let resolved = resolve(base.to_str().unwrap(), dir.path(), None, -1);
     assert_eq!(resolved_names(&resolved), ["linked", "repo"]);
+}
+
+/// Guards that a repository with a symbolic-link alias beside it is listed once, not once
+/// per spelling, so an update or exec run never works it twice.
+#[cfg(unix)]
+#[test]
+fn a_repository_and_its_alias_are_listed_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base");
+    let repo = base.join("proj");
+    fs::create_dir_all(&repo).unwrap();
+    fake_repo(&repo);
+    std::os::unix::fs::symlink(&repo, base.join("alias")).unwrap();
+    let resolved = resolve(base.to_str().unwrap(), dir.path(), None, -1);
+    let names = resolved_names(&resolved);
+    assert_eq!(names.len(), 1, "{names:?}");
+    match &resolved {
+        Resolved::Repos(repos) => {
+            assert_eq!(fs::canonicalize(&repos[0].path).unwrap(), repo);
+        }
+        _ => panic!("not repos"),
+    }
+}
+
+/// Guards the depth boundary: a directory first met at the depth limit, where the
+/// walk cannot descend, must not block a shallower link spelling of the same
+/// directory — the repository inside is still found, once.
+#[cfg(unix)]
+#[test]
+fn a_directory_at_the_depth_limit_does_not_block_its_alias() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base");
+    let inner = base.join("a/b/inner");
+    fs::create_dir_all(&inner).unwrap();
+    fake_repo(&inner.join("r"));
+    std::os::unix::fs::symlink(&inner, base.join("link")).unwrap();
+    // Direct spelling: inner sits at depth 3, its repository at depth 4.
+    // Via the link: inner at depth 1, the repository at depth 2.
+    let resolved = resolve(base.to_str().unwrap(), dir.path(), None, 3);
+    assert_eq!(resolved_names(&resolved), ["link/r"]);
+}
+
+/// Guards that a link to a different repository is still followed, and listed once.
+#[cfg(unix)]
+#[test]
+fn a_link_to_another_repository_is_followed_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base");
+    fs::create_dir_all(&base).unwrap();
+    let other = dir.path().join("other");
+    fs::create_dir_all(&other).unwrap();
+    fake_repo(&other);
+    std::os::unix::fs::symlink(&other, base.join("alias")).unwrap();
+    let resolved = resolve(base.to_str().unwrap(), dir.path(), None, -1);
+    assert_eq!(resolved_names(&resolved), ["alias"]);
+}
+
+/// Guards that a glob matching a repository and its alias lists the repository once.
+#[cfg(unix)]
+#[test]
+fn a_glob_matching_a_repository_and_its_alias_lists_it_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base");
+    let repo = base.join("proj");
+    fs::create_dir_all(&repo).unwrap();
+    fake_repo(&repo);
+    std::os::unix::fs::symlink(&repo, base.join("alias")).unwrap();
+    let pattern = format!("{}/*", base.display());
+    let resolved = resolve(&pattern, dir.path(), None, 3);
+    let names = resolved_names(&resolved);
+    assert_eq!(names.len(), 1, "{names:?}");
 }
 
 /// Guards glob discovery, and that `*` skips hidden directories.

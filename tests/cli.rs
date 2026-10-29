@@ -1030,6 +1030,59 @@ fn a_relative_config_path_round_trips() {
     assert!(stdout(&listed).contains("repo"), "{}", stdout(&listed));
 }
 
+/// Guards a pipe that closes after the banner, mid-list: the write failure reaches
+/// `main` from the command, and a broken pipe still ends the run with success.
+#[test]
+fn a_broken_pipe_during_list_still_exits_successfully() {
+    let (dir, file, text) = temp_config();
+    let entries: Vec<String> = (0..5000)
+        .map(|index| format!("\"/repositories/entry-{index:04}\""))
+        .collect();
+    fs::write(&file, format!("repositories = [{}]\n", entries.join(", "))).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_9up"))
+        .args(["-C", text.as_str(), "list"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Read only the banner, then close the pipe. The listing is far larger than the
+    // pipe holds, so the child is still writing when the read end goes away.
+    let mut pipe = child.stdout.take().unwrap();
+    let mut banner = [0_u8; 5];
+    std::io::Read::read_exact(&mut pipe, &mut banner).unwrap();
+    assert_eq!(&banner, b"9up\n\n");
+    drop(pipe);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
+/// Guards that an inherited `GIT_CONFIG_KEY_*` never reaches the git calls: it injects
+/// a whole remote, so if it reached git the run would fetch from it instead of
+/// reporting no remotes.
+#[test]
+fn an_inherited_git_config_key_does_not_reach_git() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    make_repo(&repo);
+    let remote = dir.path().join("remote");
+    make_repo(&remote);
+    let out = nine_up_env(
+        dir.path(),
+        &["update", repo.to_str().unwrap()],
+        &[
+            ("GIT_CONFIG_COUNT", "2"),
+            ("GIT_CONFIG_KEY_0", "remote.origin.url"),
+            ("GIT_CONFIG_VALUE_0", remote.to_str().unwrap()),
+            ("GIT_CONFIG_KEY_1", "remote.origin.fetch"),
+            ("GIT_CONFIG_VALUE_1", "+refs/heads/*:refs/remotes/origin/*"),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("No remotes."), "{}", stdout(&out));
+}
+
 /// Guards a closed stdout; a broken pipe, as from `head`, must not turn into a failure.
 #[test]
 fn a_closed_stdout_still_exits_successfully() {
