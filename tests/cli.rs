@@ -54,6 +54,11 @@ fn run_from_deleted_cwd(dir: &Path, suffix: &str) -> Output {
         .unwrap()
 }
 
+/// Decode stderr leniently, for tests that check a warning.
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
 /// Decode stdout leniently, so a failing assertion can still print what the binary wrote.
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
@@ -743,7 +748,7 @@ fn exec_depth_limits_the_search() {
 }
 
 /// Guards the default config path: an absolute `XDG_CONFIG_HOME` wins on every platform; a relative or
-/// empty one, or an empty `-C`, falls back to `~/.config`.
+/// empty one, or an empty `-C`, falls back to `~/.config`. A relative one also warns.
 #[test]
 fn default_config_path_follows_xdg_config_home_only_when_absolute() {
     let dir = tempfile::tempdir().unwrap();
@@ -762,6 +767,13 @@ fn default_config_path_follows_xdg_config_home_only_when_absolute() {
             stdout(&out).contains("/from-default"),
             "XDG_CONFIG_HOME={xdg:?}: {}",
             stdout(&out)
+        );
+        // A relative value warns on stderr; an empty one counts as unset and stays quiet.
+        assert_eq!(
+            stderr(&out).contains("ignoring XDG_CONFIG_HOME"),
+            !xdg.is_empty(),
+            "XDG_CONFIG_HOME={xdg:?}: {}",
+            stderr(&out)
         );
         // An empty `-C` value uses the same default path.
         let out = nine_up_env(
