@@ -265,7 +265,10 @@ fn a_repository_and_its_alias_are_listed_once() {
     assert_eq!(names.len(), 1, "{names:?}");
     match &resolved {
         Resolved::Repos(repos) => {
-            assert_eq!(fs::canonicalize(&repos[0].path).unwrap(), repo);
+            assert_eq!(
+                fs::canonicalize(&repos[0].path).unwrap(),
+                fs::canonicalize(&repo).unwrap()
+            );
         }
         _ => panic!("not repos"),
     }
