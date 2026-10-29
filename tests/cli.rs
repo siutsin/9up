@@ -1138,7 +1138,9 @@ fn a_closed_stdout_still_exits_successfully() {
 
 /// Guards an output error that is not a broken pipe: every write to a full device
 /// fails, so `main` must report the error and exit 1, not succeed quietly.
-#[cfg(unix)]
+/// Linux only: macOS has no /dev/full, and a read-only fd does not serve — the
+/// standard library discards writes to a bad stdout fd instead of erroring.
+#[cfg(target_os = "linux")]
 #[test]
 fn an_output_error_that_is_not_a_broken_pipe_fails_the_run() {
     let (dir, file, text) = temp_config();
