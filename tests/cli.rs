@@ -5,9 +5,8 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
+/// Run the built binary in `dir` with `HOME` pinned so tests stay hermetic.
 fn nine_up(dir: &Path, args: &[&str]) -> Output {
-    // HOME points at the test's temp dir, so no test reads the real
-    // default config file.
     Command::new(env!("CARGO_BIN_EXE_9up"))
         .args(args)
         .current_dir(dir)
@@ -16,6 +15,7 @@ fn nine_up(dir: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
+/// Run the binary with extra environment variables, for `HOME` and `XDG_CONFIG_HOME` tests.
 fn nine_up_env(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_9up"));
     command.args(args).current_dir(dir).env("HOME", dir);
@@ -25,8 +25,7 @@ fn nine_up_env(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     command.output().unwrap()
 }
 
-/// A temp directory and the config file inside it, in both forms
-/// the tests use: the path, and its text for `-C`.
+/// A temp directory and its config file, as a path and as text for `-C`.
 fn temp_config() -> (tempfile::TempDir, std::path::PathBuf, String) {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("config.toml");
@@ -34,9 +33,8 @@ fn temp_config() -> (tempfile::TempDir, std::path::PathBuf, String) {
     (dir, file, text)
 }
 
-/// Run the binary with the given trailing arguments from a current
-/// directory that no longer exists, and return its output. The config
-/// names one repository, `/srv/repos`.
+/// Run the binary with `suffix` from a deleted current directory; the config names only
+/// `/srv/repos`.
 fn run_from_deleted_cwd(dir: &Path, suffix: &str) -> Output {
     let gone = dir.join("gone");
     fs::create_dir(&gone).unwrap();
@@ -56,15 +54,17 @@ fn run_from_deleted_cwd(dir: &Path, suffix: &str) -> Output {
         .unwrap()
 }
 
+/// Decode stdout leniently, so a failing assertion can still print what the binary wrote.
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// Guards `add`, `list` and `delete` end to end; they are the main way users edit the config.
 #[test]
 fn add_list_and_delete_round_trip() {
     let (dir, file, text) = temp_config();
     let b = text.as_str();
-    // getcwd resolves symlinks and macOS puts the temp dir behind /var, so canonicalise to match the stored path.
+    // getcwd resolves the macOS /var symlink over temp dirs; canonicalise to match the stored path.
     let repo = fs::canonicalize(dir.path()).unwrap().join("repo");
     let repo = repo.display().to_string();
 
@@ -95,6 +95,7 @@ fn add_list_and_delete_round_trip() {
     assert_eq!(fs::read_to_string(&file).unwrap(), "repositories = []\n");
 }
 
+/// Run git isolated from the user's config, so a local setting cannot change a test's result.
 fn git(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
         .args(args)
@@ -110,17 +111,20 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} failed");
 }
 
+/// Commit one file, the smallest step that gives a remote something new to fetch.
 fn commit_file(dir: &Path, name: &str) {
     fs::write(dir.join(name), name).unwrap();
     git(dir, &["add", name]);
     git(dir, &["commit", "-qm", &format!("add {name}")]);
 }
 
+/// Create an empty repository on `main`, enough for discovery to find it.
 fn make_repo(dir: &Path) {
     fs::create_dir_all(dir).unwrap();
     git(dir, &["init", "-b", "main"]);
 }
 
+/// Guards discovery; a base path, a single repository and a missing path each report differently.
 #[test]
 fn discovery_prints_headers_and_names() {
     let dir = tempfile::tempdir().unwrap();
@@ -142,6 +146,7 @@ fn discovery_prints_headers_and_names() {
     assert!(stdout(&empty).contains("doesn't exist"));
 }
 
+/// Guards the no argument run and `clean`, which drops missing paths but keeps comment entries.
 #[test]
 fn bare_run_uses_the_configured_paths_and_clean_prunes_them() {
     let (dir, file, text) = temp_config();
@@ -181,6 +186,7 @@ fn bare_run_uses_the_configured_paths_and_clean_prunes_them() {
     assert!(stdout(&again).contains("Nothing to clean."));
 }
 
+/// Guards an empty config; the user gets a hint to add a repository, not silence.
 #[test]
 fn no_configured_paths_prints_the_hint() {
     let (dir, file, _) = temp_config();
@@ -188,6 +194,7 @@ fn no_configured_paths_prints_the_hint() {
     assert!(stdout(&out).contains("No repositories configured."));
 }
 
+/// Guards the fetch summary; new branches, new tags and moved references must each be named.
 #[test]
 fn update_reports_what_a_fetch_brought_in() {
     let dir = tempfile::tempdir().unwrap();
@@ -212,6 +219,7 @@ fn update_reports_what_a_fetch_brought_in() {
     assert!(stdout(&again).contains("origin is up to date."));
 }
 
+/// Guards fetching every remote; a remote with no refspec is skipped, not failed.
 #[test]
 fn two_remotes_both_fetch_and_a_refspec_less_remote_is_skipped() {
     let dir = tempfile::tempdir().unwrap();
@@ -245,6 +253,7 @@ fn two_remotes_both_fetch_and_a_refspec_less_remote_is_skipped() {
     );
 }
 
+/// Guards that a failed fetch stops later remotes, so none reports success after an error.
 #[test]
 fn a_failed_fetch_stops_the_remaining_remotes() {
     let dir = tempfile::tempdir().unwrap();
@@ -265,6 +274,7 @@ fn a_failed_fetch_stops_the_remaining_remotes() {
     assert!(!text.contains("upstream is up to date."), "{text}");
 }
 
+/// Read a reference's commit, so tests can prove whether a branch moved.
 fn sha(dir: &Path, reference: &str) -> String {
     let out = Command::new("git")
         .args(["rev-parse", reference])
@@ -275,6 +285,7 @@ fn sha(dir: &Path, reference: &str) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
+/// Guards the branch step; only fast-forwards move branches, so a diverged one keeps local commits.
 #[test]
 fn branch_step_fast_forwards_and_skips() {
     let dir = tempfile::tempdir().unwrap();
@@ -326,6 +337,7 @@ fn branch_step_fast_forwards_and_skips() {
     assert!(stdout(&again).contains("main is up to date."));
 }
 
+/// Guards `-f` and a dirty work tree; neither may move the checked out branch.
 #[test]
 fn fetch_only_and_uncommitted_changes() {
     let dir = tempfile::tempdir().unwrap();
@@ -357,6 +369,7 @@ fn fetch_only_and_uncommitted_changes() {
     assert_eq!(sha(&stale, "main"), behind);
 }
 
+/// Guards bare repositories; with no work tree, the `HEAD` branch must still fast-forward.
 #[test]
 fn a_bare_repository_updates_its_head_branch() {
     let dir = tempfile::tempdir().unwrap();
@@ -384,6 +397,7 @@ fn a_bare_repository_updates_its_head_branch() {
     assert_eq!(sha(&bare, "main"), sha(&bare, "refs/remotes/origin/main"));
 }
 
+/// Guards a branch tracking a local branch; it must follow that branch after it moves.
 #[test]
 fn a_branch_tracking_a_local_branch_sees_its_move() {
     let dir = tempfile::tempdir().unwrap();
@@ -403,6 +417,7 @@ fn a_branch_tracking_a_local_branch_sees_its_move() {
     assert_eq!(sha(&stale, "b-follow"), sha(&stale, "origin/main"));
 }
 
+/// Guards `exec` output order and exit status; a failing command must not fail the run.
 #[test]
 fn exec_runs_in_each_repository_and_ignores_the_exit_status() {
     let dir = tempfile::tempdir().unwrap();
@@ -433,6 +448,7 @@ fn exec_runs_in_each_repository_and_ignores_the_exit_status() {
     assert!(stdout(&missing).contains("Could not run /nonexistent-9up/cmd:"));
 }
 
+/// Guards `exec` with no command; it is a usage error and must not change the config.
 #[test]
 fn exec_with_no_command_is_a_usage_error_and_touches_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -447,6 +463,7 @@ fn exec_with_no_command_is_a_usage_error_and_touches_nothing() {
     );
 }
 
+/// Guards `exec` with an empty config; only the banner is printed, with no hint or error.
 #[test]
 fn exec_with_no_configured_paths_prints_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -458,6 +475,7 @@ fn exec_with_no_configured_paths_prints_nothing() {
     assert_eq!(stdout(&out), "9up\n\n");
 }
 
+/// Guards the `-t` short flag for depth; it must parse even with a negative value.
 #[test]
 fn depth_uses_the_short_flag_t() {
     let dir = tempfile::tempdir().unwrap();
@@ -468,6 +486,7 @@ fn depth_uses_the_short_flag_t() {
     assert!(stdout(&out).contains("repo (1 repository)"));
 }
 
+/// Check that a reference exists, so tests can prove a prune removed it.
 fn ref_exists(dir: &Path, reference: &str) -> bool {
     Command::new("git")
         .args(["rev-parse", "--verify", "-q", reference])
@@ -519,6 +538,7 @@ fn remote_work_stale(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf, std
     (remote, work, stale)
 }
 
+/// Guards `-c`; only the current branch's remote is fetched, so other remotes stay untouched.
 #[test]
 fn current_only_fetches_only_the_tracked_remote() {
     let dir = tempfile::tempdir().unwrap();
@@ -557,10 +577,10 @@ fn current_only_fetches_only_the_tracked_remote() {
     assert_eq!(sha(&stale, "refs/remotes/upstream/main"), upstream_before);
 }
 
+/// Guards `list` from a deleted current directory; it needs no cwd, so it must still work.
 #[test]
 fn list_survives_a_deleted_current_directory() {
     let dir = tempfile::tempdir().unwrap();
-    // list needs no cwd, so a deleted one must not fail it.
     let out = run_from_deleted_cwd(dir.path(), "list");
     assert!(
         out.status.success(),
@@ -570,6 +590,7 @@ fn list_survives_a_deleted_current_directory() {
     assert!(stdout(&out).contains("/srv/repos"), "{}", stdout(&out));
 }
 
+/// Guards `-c` scope; it limits the fetch, not the branch step, so other branches still update.
 #[test]
 fn current_only_still_updates_a_non_current_branch() {
     let dir = tempfile::tempdir().unwrap();
@@ -591,6 +612,7 @@ fn current_only_still_updates_a_non_current_branch() {
     assert_eq!(sha(&stale, "side"), sha(&work, "side"));
 }
 
+/// Guards `-c` on a detached `HEAD`; with no tracked remote, the user gets a clear error.
 #[test]
 fn current_only_with_a_detached_head_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -605,6 +627,7 @@ fn current_only_with_a_detached_head_is_an_error() {
     );
 }
 
+/// Guards a detached `HEAD`; local branches must still fast-forward during a full update.
 #[test]
 fn a_detached_head_update_still_updates_branches() {
     let dir = tempfile::tempdir().unwrap();
@@ -619,6 +642,7 @@ fn a_detached_head_update_still_updates_branches() {
     assert_eq!(sha(&stale, "main"), sha(&stale, "refs/remotes/origin/main"));
 }
 
+/// Guards `--prune`; a branch deleted on the remote must lose its remote tracking reference.
 #[test]
 fn prune_removes_a_branch_deleted_on_the_remote() {
     let dir = tempfile::tempdir().unwrap();
@@ -637,6 +661,7 @@ fn prune_removes_a_branch_deleted_on_the_remote() {
     assert!(!ref_exists(&stale, "refs/remotes/origin/feat"));
 }
 
+/// Guards the `--` separators in git calls; a dash leading name must never be read as an option.
 #[test]
 fn dash_leading_branch_and_remote_are_protected_by_separators() {
     let dir = tempfile::tempdir().unwrap();
@@ -680,20 +705,18 @@ fn dash_leading_branch_and_remote_are_protected_by_separators() {
 
     let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
     let text = stdout(&out);
-    // The fetch needed `git fetch ... -- -x`: without the separator git
-    // would report an unknown switch and the reference would not move.
+    // Without `--` in `git fetch ... -- -x`, git sees an unknown switch and the ref does not move.
     assert_eq!(sha(&stale, "refs/remotes/-x/main"), sha(&work, "main"));
     assert!(text.contains("Fetched -x:"), "{text}");
-    // The branch step needed `git branch -f -- -x ...`: git rejects a
-    // dash-leading branch name outright, and the separator is what gets
-    // the name past option parsing to that validation. Without it git
-    // would report an unknown switch instead.
+    // The branch step needs `--` in `git branch -f -- -x ...` to get the name past option parsing
+    // to git's branch name check, which rejects it; without `--` git reports an unknown switch.
     assert!(
         text.contains("-x: fatal: '-x' is not a valid branch name"),
         "{text}"
     );
 }
 
+/// Guards depth for `exec`; `-t` and `--depth` must limit the search as they do for `update`.
 #[test]
 fn exec_depth_limits_the_search() {
     let dir = tempfile::tempdir().unwrap();
@@ -719,12 +742,13 @@ fn exec_depth_limits_the_search() {
     assert!(text.contains("a/two"), "{text}");
 }
 
+/// Guards the default config path; an invalid `XDG_CONFIG_HOME` or empty `-C` falls back to it.
 #[test]
 fn default_config_path_ignores_relative_and_empty_xdg_config_home() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().to_str().unwrap();
-    // `dirs` follows the platform: the XDG path on Linux, Application
-    // Support on macOS, where XDG_CONFIG_HOME plays no part at all.
+    // `dirs` picks the XDG path on Linux; macOS uses Application Support and ignores
+    // `XDG_CONFIG_HOME`.
     #[cfg(target_os = "macos")]
     let default_file = dir
         .path()
@@ -759,6 +783,7 @@ fn default_config_path_ignores_relative_and_empty_xdg_config_home() {
     }
 }
 
+/// Guards config edits; user comments and unknown keys must survive `add` and `delete`.
 #[test]
 fn a_toml_comment_and_an_unknown_key_survive_add_and_delete() {
     let (dir, file, text) = temp_config();
@@ -782,6 +807,7 @@ fn a_toml_comment_and_an_unknown_key_survive_add_and_delete() {
     assert_eq!(stdout(&listed), "9up\n\n/a\n");
 }
 
+/// Guards `delete` with duplicates; only the first match goes, so later entries keep their place.
 #[test]
 fn delete_removes_only_the_first_match() {
     let (dir, file, text) = temp_config();
@@ -795,6 +821,7 @@ fn delete_removes_only_the_first_match() {
     assert_eq!(stdout(&listed), "9up\n\n/b\n/a\n");
 }
 
+/// Guards no op edits; a command that changes nothing must not rewrite the user's file.
 #[test]
 fn a_no_op_delete_and_clean_leave_the_file_unchanged() {
     let (dir, file, text) = temp_config();
@@ -815,6 +842,7 @@ fn a_no_op_delete_and_clean_leave_the_file_unchanged() {
     assert_eq!(fs::read_to_string(&file).unwrap(), text);
 }
 
+/// Guards broken configs; bad TOML, wrong types and invalid UTF-8 exit 1 with a message.
 #[test]
 fn an_unparseable_config_fails_with_exit_1() {
     let (dir, file, text) = temp_config();
@@ -835,6 +863,7 @@ fn an_unparseable_config_fails_with_exit_1() {
     assert!(!out.stderr.is_empty());
 }
 
+/// Guards a config without `repositories`; it means an empty list, not an error.
 #[test]
 fn a_missing_repositories_key_means_no_repositories() {
     let (dir, file, _) = temp_config();
@@ -844,6 +873,7 @@ fn a_missing_repositories_key_means_no_repositories() {
     assert!(stdout(&out).contains("No repositories configured."));
 }
 
+/// Guards that a `gitup` bookmark file is not read; 9up has its own config and no import.
 #[test]
 fn a_gitup_bookmark_file_is_ignored() {
     let dir = tempfile::tempdir().unwrap();
@@ -862,6 +892,7 @@ fn a_gitup_bookmark_file_is_ignored() {
     assert!(!stdout(&out).contains("/from-gitup"));
 }
 
+/// Guards a branch whose upstream reference is missing; it must be skipped with no noise.
 #[test]
 fn a_branch_with_a_missing_upstream_reference_is_silent() {
     let dir = tempfile::tempdir().unwrap();
@@ -879,6 +910,7 @@ fn a_branch_with_a_missing_upstream_reference_is_silent() {
     assert!(!text.contains("ghost"), "{text}");
 }
 
+/// Guards a branch with no merge base with its upstream; it must be skipped with no noise.
 #[test]
 fn a_branch_with_no_merge_base_with_its_upstream_is_silent() {
     let dir = tempfile::tempdir().unwrap();
@@ -893,6 +925,7 @@ fn a_branch_with_no_merge_base_with_its_upstream_is_silent() {
     assert!(!text.contains("alien"), "{text}");
 }
 
+/// Guards `exec` in a bare repository; with no work tree, it runs in the repository directory.
 #[test]
 fn exec_in_a_bare_repository_runs_in_the_repository_directory() {
     let dir = tempfile::tempdir().unwrap();
@@ -907,14 +940,14 @@ fn exec_in_a_bare_repository_runs_in_the_repository_directory() {
     );
     let text = stdout(&out);
     let canonical = fs::canonicalize(&bare).unwrap();
-    // A trimmed line must equal the path: the header alone contains
-    // it as a substring, so contains() could not fail.
+    // Match a whole trimmed line: the header contains the path, so contains() could not fail.
     let printed = text.lines().any(|line| {
         line.trim() == bare.display().to_string() || line.trim() == canonical.display().to_string()
     });
     assert!(printed, "{text}");
 }
 
+/// Guards `clean` with an empty config; the user sees the hint, not a silent success.
 #[test]
 fn clean_with_no_configured_repositories_says_so() {
     let (dir, _file, text) = temp_config();
@@ -924,6 +957,7 @@ fn clean_with_no_configured_repositories_says_so() {
     assert!(stdout(&out).contains("No repositories configured."));
 }
 
+/// Guards a lone `#` entry; it is an empty comment and must print nothing.
 #[test]
 fn update_with_a_lone_hash_entry_prints_nothing_for_it() {
     let (dir, file, text) = temp_config();
@@ -934,6 +968,7 @@ fn update_with_a_lone_hash_entry_prints_nothing_for_it() {
     assert!(!stdout(&out).contains('#'), "{}", stdout(&out));
 }
 
+/// Guards `exec` on comment and missing entries; they are reported as `update` reports them.
 #[test]
 fn exec_prints_comment_and_missing_entries() {
     let (dir, file, text) = temp_config();
@@ -950,6 +985,7 @@ fn exec_prints_comment_and_missing_entries() {
     assert!(text.contains("doesn't exist."), "{text}");
 }
 
+/// Guards `update` from a deleted cwd; it needs one, so it must fail with a message.
 #[test]
 fn update_fails_from_a_deleted_current_directory() {
     let dir = tempfile::tempdir().unwrap();
@@ -962,6 +998,7 @@ fn update_fails_from_a_deleted_current_directory() {
     );
 }
 
+/// Guards a relative `-C` path; it resolves against the cwd for both writes and reads.
 #[test]
 fn a_relative_config_path_round_trips() {
     let dir = tempfile::tempdir().unwrap();
@@ -973,6 +1010,7 @@ fn a_relative_config_path_round_trips() {
     assert!(stdout(&listed).contains("repo"), "{}", stdout(&listed));
 }
 
+/// Guards a closed stdout; a broken pipe, as from `head`, must not turn into a failure.
 #[test]
 fn a_closed_stdout_still_exits_successfully() {
     let dir = tempfile::tempdir().unwrap();

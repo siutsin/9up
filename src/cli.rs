@@ -76,14 +76,14 @@ pub enum Command {
 
 const COMMANDS: [&str; 7] = ["update", "add", "delete", "list", "clean", "exec", "help"];
 
-/// The bare form: `9up [paths...]` means `9up update [paths...]`. When the
-/// first positional argument is not a command name, insert `update` after
-/// the program name. A flattened update struct cannot do this: its path
-/// list swallows the command name as a path.
+/// Make `9up [paths...]` mean `9up update [paths...]`: insert `update` after the program name
+/// when the first positional is not a command. A flattened update struct cannot: its path list
+/// swallows the command name as a path.
 pub fn argv() -> Vec<OsString> {
     insert_update(env::args_os().collect())
 }
 
+/// Split from `argv` so tests can feed the shim any argument list, not the real process ones.
 fn insert_update(mut args: Vec<OsString>) -> Vec<OsString> {
     let mut index = 1;
     let mut positional = None;
@@ -110,7 +110,7 @@ fn insert_update(mut args: Vec<OsString>) -> Vec<OsString> {
         // A path after `--` is a path, even when it is named like a command.
         Some(_) if after_separator => true,
         Some(index) => !COMMANDS.contains(&args[index].to_string_lossy().as_ref()),
-        // No path: an update option with no command still means update.
+        // No path: a bare update option still means update.
         None => args
             .iter()
             .skip(1)
@@ -122,6 +122,7 @@ fn insert_update(mut args: Vec<OsString>) -> Vec<OsString> {
     args
 }
 
+/// Spot pathless update flags, so `9up -p` runs an update instead of failing in clap.
 fn is_update_option(token: &str) -> bool {
     if token.starts_with("--") {
         return matches!(
