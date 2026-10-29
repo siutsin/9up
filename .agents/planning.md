@@ -239,7 +239,7 @@ otherwise.
 
 ### Dependencies
 
-Five crates, plus one for tests and one for the coverage tooling. The standard library covers the rest.
+Five crates, plus one for tests. The standard library covers the rest.
 Every version is pinned exactly (`=` in `Cargo.toml`), so each update arrives as a Renovate pull request
 instead of drifting inside a range. A bump that changes a behaviour this plan states gets a plan update
 in the same pull request.
@@ -252,7 +252,6 @@ in the same pull request.
 | `dirs` | The home directory: the lookup behind `~` expansion and the `~/.config` default. |
 | `toml_edit` | The config file: parse the TOML document and edit it in place, changing only the `repositories` array. |
 | `tempfile` (development only) | Temporary directories in integration tests. |
-| `serde_json` (xtask only) | Read the coverage export in the `xtask` checker. Never linked into the shipped binary. |
 
 What the standard library covers here: the colour constants (a few string constants, written by hand), the
 error type (`io::Error` and `io::Result`), the lexical path normalisation (a short function over path
@@ -331,11 +330,11 @@ Three layers:
   helper sets `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, so a developer's git configuration
   (signing, hooks) cannot change a result.
 
-Coverage is a gate. `mise run coverage` exports the coverage data with `cargo llvm-cov` and the
-`xtask` checker fails the run unless one test run covers every production function in full: every
-code region of the function executed. Test code never counts toward it: the export drops the
-`tests.rs` files by name, and the checker only accepts functions in production files. Replace the
-name filter with `#[coverage(off)]` on the test modules once that attribute is stable.
+Coverage is a gate. `mise run coverage` runs `cargo llvm-cov` with `--fail-under-regions 100`
+and `--fail-under-functions 100`, so a production code region or function the tests never
+execute fails the run. Test code never counts toward it: the run drops the `tests.rs` files
+by name. Replace the name filter with `#[coverage(off)]` on the test modules once that
+attribute is stable.
 
 Behaviour tables, one row per case:
 
