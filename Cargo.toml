@@ -1,8 +1,3 @@
-[workspace]
-members = [".", "xtask"]
-# Both, so a plain `cargo test` or `cargo clippy` at the root covers the checker too.
-default-members = [".", "xtask"]
-
 [package]
 name = "nine-up"
 version = "0.1.0"

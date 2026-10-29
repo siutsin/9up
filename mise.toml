@@ -4,7 +4,7 @@ node = "24.22.1"
 "aqua:zizmorcore/zizmor" = "1.31.1"
 "aqua:taiki-e/cargo-llvm-cov" = "0.9.1"
 
-# The coverage gate, run by CI and by hand. Every production function must be
-# fully covered by one test run; the xtask checker enforces it on the export.
+# The coverage gate, run by CI and by hand. Production code must sit at
+# 100 percent regions and functions; test files are filtered out by name.
 [tasks.coverage]
-run = "mkdir -p target/llvm-cov && cargo llvm-cov --locked --ignore-filename-regex 'tests\\.rs$' --json --output-path target/llvm-cov/coverage.json && cargo run --locked -p xtask -- target/llvm-cov/coverage.json"
+run = "cargo llvm-cov --locked --ignore-filename-regex 'tests\\.rs$' --fail-under-regions 100 --fail-under-functions 100"
