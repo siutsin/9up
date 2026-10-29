@@ -32,11 +32,26 @@ repositories = [
 ]
 ```
 
-The default file is `$XDG_CONFIG_HOME/9up/config.toml`, or `~/.config/9up/config.toml` when the variable is
-unset or empty, and a relative value is ignored. On macOS the default is
-`~/Library/Application Support/9up/config.toml`. Pass `-C`/`--config <path>` to use a different file, or
-`-C ""` for the default. Other keys in the file are left alone. Update takes `--current-only`, `--fetch-only`, `--prune` and
-`--depth <n>` (short `-t`; negative means no limit). `exec` takes `--depth` too.
+### Config file
+
+The default path depends on the platform:
+
+| Platform    | Default path                                                         |
+|-------------|----------------------------------------------------------------------|
+| Linux, etc. | `$XDG_CONFIG_HOME/9up/config.toml`, else `~/.config/9up/config.toml` |
+| macOS       | `~/Library/Application Support/9up/config.toml`                      |
+
+On Linux, an unset, empty or relative `XDG_CONFIG_HOME` is ignored.
+
+- `-C`/`--config <path>` uses a different file. `-C ""` means the default.
+- Other keys in the file are left alone.
+
+### Options
+
+| Command  | Options                                                                                          |
+|----------|--------------------------------------------------------------------------------------------------|
+| `update` | `--current-only`, `--fetch-only`, `--prune`, `--depth <n>` (short `-t`; negative means no limit) |
+| `exec`   | `--depth <n>`                                                                                    |
 
 ## Development
 
@@ -52,5 +67,5 @@ markdownlint-cli2 '**/*.md'
 
 ## Credit
 
-9up is inspired by [`gitup`](https://github.com/earwig/git-repo-updater) (git-repo-updater) 0.5.2, the Python tool by
+9up is inspired by [`gitup`](https://github.com/earwig/git-repo-updater) (git-repo-updater), the Python tool by
 Ben Kurtovic.
