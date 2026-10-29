@@ -280,6 +280,20 @@ mod tests {
     }
 
     #[test]
+    fn expand_home_leaves_a_plain_path_alone() {
+        assert_eq!(
+            expand_home("plain/dir", Some(Path::new("/home/a"))),
+            PathBuf::from("plain/dir")
+        );
+    }
+
+    #[test]
+    fn last_component_falls_back_to_the_whole_path() {
+        assert_eq!(last_component(Path::new("/")), "/");
+        assert_eq!(last_component(Path::new("/a/b")), "b");
+    }
+
+    #[test]
     #[should_panic(expected = "not repos")]
     fn resolved_names_rejects_a_non_repository_result() {
         resolved_names(&Resolved::Comment("x".to_owned()));

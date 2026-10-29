@@ -4,6 +4,7 @@ node = "24.22.1"
 "aqua:zizmorcore/zizmor" = "1.31.1"
 "aqua:taiki-e/cargo-llvm-cov" = "0.9.1"
 
-# The coverage gate, run by CI and by hand: fails below 97% of lines.
+# The coverage gate, run by CI and by hand: every production function
+# must be covered in full by one test run; test code does not count.
 [tasks.coverage]
-run = "cargo llvm-cov --locked --fail-under-lines 97"
+run = "cargo llvm-cov --locked && cargo run --quiet --locked --manifest-path xtask/Cargo.toml --target-dir target/xtask"
