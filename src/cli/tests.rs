@@ -1,5 +1,6 @@
 use super::*;
 
+/// Run the shim on string slices, so each case reads as plain argv in, argv out.
 fn shim(args: &[&str]) -> Vec<String> {
     insert_update(args.iter().map(OsString::from).collect())
         .iter()
@@ -7,6 +8,7 @@ fn shim(args: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// Guards the most used bare `9up <paths>` form; a flag value like `-1` must not stop the scan.
 #[test]
 fn bare_paths_gain_the_update_command() {
     assert_eq!(shim(&["9up", "a", "b"]), ["9up", "update", "a", "b"]);
@@ -17,6 +19,7 @@ fn bare_paths_gain_the_update_command() {
     );
 }
 
+/// Guards that commands, `--config` values and `--version` pass unrewritten; rewriting breaks them.
 #[test]
 fn commands_and_flags_pass_through() {
     assert_eq!(shim(&["9up"]), ["9up"]);
@@ -33,6 +36,7 @@ fn commands_and_flags_pass_through() {
     assert_eq!(shim(&["9up", "help"]), ["9up", "help"]);
 }
 
+/// Guards `9up -c` and attached depth forms; clap rejects them without the inserted `update`.
 #[test]
 fn bare_options_without_a_path_mean_update() {
     assert_eq!(shim(&["9up", "-c"]), ["9up", "update", "-c"]);
@@ -52,6 +56,7 @@ fn bare_options_without_a_path_mean_update() {
     assert_eq!(shim(&["9up", "-C", "f"]), ["9up", "-C", "f"]);
 }
 
+/// Guards the long update flags; they take a separate code path from short flag clusters.
 #[test]
 fn a_bare_long_option_means_update() {
     assert_eq!(
@@ -61,6 +66,7 @@ fn a_bare_long_option_means_update() {
     assert_eq!(shim(&["9up", "--prune"]), ["9up", "update", "--prune"]);
 }
 
+/// Guards a directory named like a command; after `--` it is still updated as a path.
 #[test]
 fn a_path_after_the_separator_is_a_path() {
     assert_eq!(

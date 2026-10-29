@@ -10,6 +10,7 @@ pub(crate) const RED: &str = "\u{1b}[31m";
 const CYAN: &str = "\u{1b}[36m";
 const RESET: &str = "\u{1b}[0m";
 
+/// Colour text only when asked, so piped output stays free of escape codes.
 pub(crate) fn paint(enabled: bool, code: &str, text: &str) -> String {
     if enabled {
         format!("{code}{text}{RESET}")
@@ -18,6 +19,7 @@ pub(crate) fn paint(enabled: bool, code: &str, text: &str) -> String {
     }
 }
 
+/// Show each input as an absolute path with its repository count, clear whatever the user typed.
 pub(crate) fn print_header(
     out: &mut dyn Write,
     colour: bool,
@@ -41,11 +43,13 @@ pub(crate) fn print_header(
     Ok(())
 }
 
+/// One style for step errors and skip lines under a repository, so they look alike.
 pub(crate) fn red_line(out: &mut dyn Write, colour: bool, text: &str) -> io::Result<()> {
     writeln!(out, "    {}", paint(colour, RED, text))?;
     Ok(())
 }
 
+/// Render a `Report` here: `update_repo` only returns data and the front end owns output.
 pub(crate) fn render_report(
     report: &update::Report,
     colour: bool,

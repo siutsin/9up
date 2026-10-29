@@ -1,7 +1,6 @@
 use super::*;
 
-/// A minimal fake repository for tests across the crate: the `.git`
-/// layout `is_git_dir` accepts, without running git.
+/// A minimal fake repository for crate tests: the `.git` layout `is_git_dir` accepts, without git.
 pub(crate) fn fake_repo(dir: &Path) {
     let git = dir.join(".git");
     fs::create_dir_all(git.join("refs")).unwrap();
@@ -9,8 +8,7 @@ pub(crate) fn fake_repo(dir: &Path) {
     fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
 }
 
-/// The message of a path error, or a panic when the resolve was
-/// something else.
+/// The message of a path error, or a panic when the resolve was something else.
 fn expect_path_error(resolved: &Resolved) -> &str {
     match resolved {
         Resolved::PathError(message) => message,
@@ -18,6 +16,7 @@ fn expect_path_error(resolved: &Resolved) -> &str {
     }
 }
 
+/// The names a resolve found, so tests compare lists and fail loudly on any other result.
 fn resolved_names(resolved: &Resolved) -> Vec<&str> {
     match resolved {
         Resolved::Repos(repos) => repos.iter().map(|repo| repo.name.as_str()).collect(),
@@ -25,6 +24,7 @@ fn resolved_names(resolved: &Resolved) -> Vec<&str> {
     }
 }
 
+/// Guards `~` expansion with and without a home; no home leaves the path as given.
 #[test]
 fn expand_home_uses_the_given_home() {
     assert_eq!(
@@ -38,6 +38,7 @@ fn expand_home_uses_the_given_home() {
     );
 }
 
+/// Guards that only a leading `~` expands; other paths pass through unchanged.
 #[test]
 fn expand_home_leaves_a_plain_path_alone() {
     assert_eq!(
@@ -46,18 +47,21 @@ fn expand_home_leaves_a_plain_path_alone() {
     );
 }
 
+/// Guards the root path, which has no file name, so it still gets a name.
 #[test]
 fn last_component_falls_back_to_the_whole_path() {
     assert_eq!(last_component(Path::new("/")), "/");
     assert_eq!(last_component(Path::new("/a/b")), "b");
 }
 
+/// Guards the helper's panic branch, so a wrong result kind fails a test.
 #[test]
 #[should_panic(expected = "not repos")]
 fn resolved_names_rejects_a_non_repository_result() {
     resolved_names(&Resolved::Comment("x".to_owned()));
 }
 
+/// Guards the fallback for a path outside the header, so a name is never empty.
 #[test]
 fn a_repository_outside_the_header_takes_its_last_component() {
     assert_eq!(
@@ -66,6 +70,7 @@ fn a_repository_outside_the_header_takes_its_last_component() {
     );
 }
 
+/// Guards that a repository given directly is found and named by its directory.
 #[test]
 fn a_repository_at_the_path() {
     let dir = tempfile::tempdir().unwrap();
@@ -76,6 +81,7 @@ fn a_repository_at_the_path() {
     assert_eq!(resolved_names(&resolved), ["repo"]);
 }
 
+/// Guards the depth limit, and that a negative depth searches without one.
 #[test]
 fn repositories_below_the_path_respect_depth() {
     let dir = tempfile::tempdir().unwrap();
@@ -95,6 +101,7 @@ fn repositories_below_the_path_respect_depth() {
     );
 }
 
+/// Guards that names are relative to the input and that `.` takes the directory's name.
 #[test]
 fn relative_inputs_name_repositories_by_relative_path() {
     let dir = tempfile::tempdir().unwrap();
@@ -112,6 +119,7 @@ fn relative_inputs_name_repositories_by_relative_path() {
     assert_eq!(resolved_names(&resolve(".", &solo, None, 3)), ["solo"]);
 }
 
+/// Guards that bare repositories and linked worktrees count, not only normal clones.
 #[test]
 fn a_bare_repository_and_a_worktree_count() {
     let dir = tempfile::tempdir().unwrap();
@@ -137,6 +145,7 @@ fn a_bare_repository_and_a_worktree_count() {
     );
 }
 
+/// Guards comment entries and each kind of path error, so the user sees why a path failed.
 #[test]
 fn comments_errors_and_missing_paths() {
     let dir = tempfile::tempdir().unwrap();
@@ -156,6 +165,7 @@ fn comments_errors_and_missing_paths() {
     expect_path_error(&resolve("[", dir.path(), None, 3));
 }
 
+/// Guards that a broken symbolic link resolves to no repositories, not an error.
 #[cfg(unix)]
 #[test]
 fn a_broken_symbolic_link_has_no_repositories() {
@@ -168,6 +178,7 @@ fn a_broken_symbolic_link_has_no_repositories() {
     }
 }
 
+/// Guards that the search skips files and `.git` contents and names a root repository.
 #[test]
 fn search_skips_files_and_git_directories_and_names_the_root() {
     let dir = tempfile::tempdir().unwrap();
@@ -185,6 +196,7 @@ fn search_skips_files_and_git_directories_and_names_the_root() {
     assert_eq!(found[0].name, "repo");
 }
 
+/// Guards that a `**` glob does not list a repository twice.
 #[test]
 fn a_double_star_glob_lists_each_repository_once() {
     let dir = tempfile::tempdir().unwrap();
@@ -200,6 +212,7 @@ fn a_double_star_glob_lists_each_repository_once() {
     assert_eq!(names, ["a/one", "b/two"]);
 }
 
+/// Guards that a link cycle cannot hang the search, and linked repositories are still found.
 #[test]
 fn a_symbolic_link_cycle_terminates() {
     let dir = tempfile::tempdir().unwrap();
@@ -207,13 +220,11 @@ fn a_symbolic_link_cycle_terminates() {
     let repo = base.join("repo");
     fs::create_dir_all(&repo).unwrap();
     fake_repo(&repo);
-    // A repository only reachable by following a symbolic link:
-    // without follow_links(true) it is never found.
+    // A repository reachable only via a symbolic link: without `follow_links(true)` it is missed.
     let outside = dir.path().join("outside");
     fs::create_dir_all(&outside).unwrap();
     fake_repo(&outside);
-    // A cycle: base/loop points back at base. walkdir reports the
-    // loop as an error entry, which search() skips.
+    // A cycle: base/loop points back at base. walkdir reports it as an error, which `search` skips.
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(&base, base.join("loop")).unwrap();
@@ -223,6 +234,7 @@ fn a_symbolic_link_cycle_terminates() {
     assert_eq!(resolved_names(&resolved), ["linked", "repo"]);
 }
 
+/// Guards glob discovery, and that `*` skips hidden directories.
 #[test]
 fn a_glob_finds_repositories() {
     let dir = tempfile::tempdir().unwrap();
@@ -245,6 +257,7 @@ fn a_glob_finds_repositories() {
     );
 }
 
+/// Guards the one definition of exists: directories, files and broken links all count.
 #[test]
 fn path_is_live_covers_directories_files_and_broken_links() {
     let dir = tempfile::tempdir().unwrap();

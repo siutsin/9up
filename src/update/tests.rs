@@ -4,6 +4,7 @@ use std::io;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{ExitStatus, Output};
 
+/// Build a canned git result, so each stub answer fits on one line.
 fn output(raw_status: i32, stdout: &str, stderr: &str) -> Output {
     Output {
         status: ExitStatus::from_raw(raw_status),
@@ -12,14 +13,14 @@ fn output(raw_status: i32, stdout: &str, stderr: &str) -> Output {
     }
 }
 
-/// A system whose git answers just enough for the fetch and exec
-/// flows, with the fetch scripted per test.
+/// A system answering enough git for the fetch and exec flows; fetch is scripted per test.
 struct StubSys {
     fetch: FetchStub,
     prune_seen: std::cell::Cell<bool>,
 }
 
 impl StubSys {
+    /// Start with `prune_seen` unset, so a test can tell whether fetch received `--prune`.
     fn new(fetch: FetchStub) -> Self {
         Self {
             fetch,
@@ -37,6 +38,7 @@ enum FetchStub {
 }
 
 impl Sys for StubSys {
+    /// Answer the queries `update_repo` makes, with only the fetch varying per test.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
         match argv {
             ["config", "--get-regexp", ..] => Ok(output(
@@ -67,11 +69,13 @@ impl Sys for StubSys {
         }
     }
 
+    /// Always fail to start, so the exec error path runs.
     fn exec(&self, _dir: &Path, _argv: &[String]) -> io::Result<Output> {
         Err(io::Error::new(io::ErrorKind::NotFound, "no such file"))
     }
 }
 
+/// Guards a fetch that cannot start git; it must become an error step, not a lost repository.
 #[test]
 fn a_fetch_that_cannot_start_is_an_error_step() {
     let sys = StubSys::new(FetchStub::CannotStart);
@@ -92,6 +96,7 @@ fn a_fetch_that_cannot_start_is_an_error_step() {
     }
 }
 
+/// Guards that a failed fetch keeps git's `fatal:` lines; the user sees why it failed.
 #[test]
 fn a_failed_fetch_reports_gits_error_lines() {
     let sys = StubSys::new(FetchStub::Fails);
@@ -112,6 +117,7 @@ fn a_failed_fetch_reports_gits_error_lines() {
     }
 }
 
+/// Guards a command that cannot start; the report names the command and the cause.
 #[test]
 fn a_command_that_cannot_start_is_an_error_report() {
     let sys = StubSys::new(FetchStub::Fails);
@@ -122,6 +128,7 @@ fn a_command_that_cannot_start_is_an_error_report() {
     );
 }
 
+/// Guards `current_only` and `prune`; only the tracked remote is fetched and `--prune` reaches git.
 #[test]
 fn current_only_fetches_the_tracked_remote_and_prune_reaches_fetch() {
     let sys = StubSys::new(FetchStub::Succeeds);
@@ -143,6 +150,7 @@ fn current_only_fetches_the_tracked_remote_and_prune_reaches_fetch() {
     assert!(sys.prune_seen.get(), "fetch argv must carry --prune");
 }
 
+/// Guards that pruning stays off unless asked; a stray `--prune` would delete remote refs.
 #[test]
 fn without_prune_fetch_has_no_prune_flag() {
     let sys = StubSys::new(FetchStub::Succeeds);
@@ -155,6 +163,7 @@ fn without_prune_fetch_has_no_prune_flag() {
     assert!(!sys.prune_seen.get());
 }
 
+/// Guards remote parsing; config order and refspecs must survive, including a remote with none.
 #[test]
 fn parse_remotes_keeps_order_and_refspecs() {
     let text = "remote.origin.url /srv/git.git\nremote.origin.fetch +refs/heads/*:refs/remotes/origin/*\nremote.upstream.url /srv/up.git\nremote.mirror.fetch +refs/*:refs/*\nremote.mirror.url /srv/mirror.git\n";
@@ -167,6 +176,7 @@ fn parse_remotes_keeps_order_and_refspecs() {
     assert_eq!(remotes[2].refspecs.len(), 1);
 }
 
+/// Guards a fetch that fails with no stderr; the user still gets a line naming the failure.
 #[test]
 fn a_silent_fetch_failure_gets_the_fallback_line() {
     let sys = StubSys::new(FetchStub::FailsSilently);
@@ -187,8 +197,7 @@ fn a_silent_fetch_failure_gets_the_fallback_line() {
     }
 }
 
-/// A system that scripts the branch config answers, for the
-/// current-only flow.
+/// A system scripting the branch config answers for the current-only flow.
 struct FlowSys {
     regexp: &'static str,
     branch_remote: Option<&'static str>,
@@ -196,6 +205,7 @@ struct FlowSys {
 }
 
 impl Sys for FlowSys {
+    /// Answer the branch config lookups as scripted, failing the ones set to `None`.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
         match argv {
             ["config", "--get-regexp", ..] => Ok(output(0, self.regexp, "")),
@@ -213,6 +223,7 @@ impl Sys for FlowSys {
     }
 }
 
+/// Share one fetch-only, current-only update, so each test sets up only its stub.
 fn current_only_report(sys: &FlowSys) -> Report {
     let options = Options {
         current_only: true,
@@ -222,6 +233,7 @@ fn current_only_report(sys: &FlowSys) -> Report {
     update_repo(sys, Path::new("/repo"), "repo", &options)
 }
 
+/// Check the report holds just one repository error, the shape every early exit takes.
 fn assert_error(report: &Report, message: &str) {
     match &report.steps[..] {
         [Step::Error(text)] => assert_eq!(text, message),
@@ -229,6 +241,7 @@ fn assert_error(report: &Report, message: &str) {
     }
 }
 
+/// Guards that both the remote and the merge config are required; either alone tracks nothing.
 #[test]
 fn current_only_without_a_tracked_remote_is_an_error() {
     let no_remote = FlowSys {
@@ -251,6 +264,7 @@ fn current_only_without_a_tracked_remote_is_an_error() {
     );
 }
 
+/// Guards a repository with no remotes; it is an error even when the branch names a remote.
 #[test]
 fn current_only_with_no_remotes_at_all_is_an_error() {
     let sys = FlowSys {
@@ -261,6 +275,7 @@ fn current_only_with_no_remotes_at_all_is_an_error() {
     assert_error(&current_only_report(&sys), "No remotes.");
 }
 
+/// Guards a tracked remote missing from the config; it is a fetch skip, not a repository error.
 #[test]
 fn current_only_with_an_unconfigured_tracked_remote_skips_the_fetch() {
     let sys = FlowSys {
@@ -285,8 +300,7 @@ fn current_only_with_an_unconfigured_tracked_remote_skips_the_fetch() {
     }
 }
 
-/// A system that scripts the ref snapshot and the branch action
-/// (merge for the checked-out branch, branch -f for the rest).
+/// A system scripting the ref snapshot and branch action: `merge` if checked out, else `branch -f`.
 struct BranchSys {
     current: &'static str,
     refs: &'static str,
@@ -306,6 +320,7 @@ const BRANCH_REFS: &str = "refs/heads/main\0\
     2222222222222222222222222222222222222222\0\n";
 
 impl Sys for BranchSys {
+    /// Serve the scripted snapshot and action; the merge base always allows a fast-forward.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
         match argv {
             ["config", "--get-regexp", ..] => Ok(output(
@@ -338,6 +353,7 @@ impl Sys for BranchSys {
     }
 }
 
+/// Run a full update so the branch step runs after the fetch.
 fn branch_report(sys: &BranchSys) -> Report {
     let options = Options {
         current_only: false,
@@ -347,6 +363,7 @@ fn branch_report(sys: &BranchSys) -> Report {
     update_repo(sys, Path::new("/repo"), "repo", &options)
 }
 
+/// Pick out the branch step, so tests can ignore the fetch step before it.
 fn branch_step(report: &Report) -> &Step {
     report
         .steps
@@ -355,6 +372,7 @@ fn branch_step(report: &Report) -> &Step {
         .expect("a branch step")
 }
 
+/// Guards a malformed ref line; it is skipped and the valid branches are still processed.
 #[test]
 fn a_malformed_ref_line_is_skipped() {
     let sys = BranchSys {
@@ -375,6 +393,7 @@ fn a_malformed_ref_line_is_skipped() {
     }
 }
 
+/// Guards an empty ref snapshot; a successful fetch alone must not invent branch steps.
 #[test]
 fn a_full_update_with_a_succeeding_fetch_has_no_branch_steps() {
     let sys = StubSys::new(FetchStub::Succeeds);
@@ -395,6 +414,7 @@ fn a_full_update_with_a_succeeding_fetch_has_no_branch_steps() {
     }
 }
 
+/// Guards a ref snapshot that cannot be read; the branch step is dropped without an error.
 #[test]
 fn a_failed_ref_snapshot_skips_the_branch_step_silently() {
     let sys = BranchSys {
@@ -408,6 +428,7 @@ fn a_failed_ref_snapshot_skips_the_branch_step_silently() {
     assert!(matches!(report.steps[0], Step::Fetch { .. }));
 }
 
+/// Guards a merge that cannot start git; the current branch is skipped with the cause.
 #[test]
 fn a_merge_that_cannot_start_skips_the_branch() {
     let sys = BranchSys {
@@ -425,6 +446,7 @@ fn a_merge_that_cannot_start_skips_the_branch() {
     }
 }
 
+/// Guards a merge that fails for no known reason; it is reported as a plain merge failure.
 #[test]
 fn a_failed_merge_skips_the_branch_as_a_merge_failure() {
     let sys = BranchSys {
@@ -442,6 +464,7 @@ fn a_failed_merge_skips_the_branch_as_a_merge_failure() {
     }
 }
 
+/// Guards a `branch -f` that fails with no stderr; the error still names the command and status.
 #[test]
 fn a_failed_branch_force_update_reports_the_fallback() {
     let sys = BranchSys {
@@ -459,6 +482,7 @@ fn a_failed_branch_force_update_reports_the_fallback() {
     }
 }
 
+/// Guards a `branch -f` that cannot start git; it is a branch error, whereas a merge is skipped.
 #[test]
 fn a_branch_force_update_that_cannot_start_is_an_error() {
     let sys = BranchSys {
@@ -481,6 +505,7 @@ struct DeadSys;
 
 impl Sys for DeadSys {}
 
+/// Guards exec in a directory git cannot read; the report says so instead of running the command.
 #[test]
 fn exec_on_an_unreadable_repository_is_an_error() {
     let report = exec_repo(&DeadSys, Path::new("/repo"), "repo", &["ls".to_owned()]);
@@ -490,18 +515,21 @@ fn exec_on_an_unreadable_repository_is_an_error() {
     );
 }
 
+/// Guards remote parsing against lines that are not remote fields; they must not create remotes.
 #[test]
 fn parse_remotes_skips_lines_it_cannot_use() {
     let text = "no-separator\nbranch.main.remote origin\nremote.bare /srv/x.git\n";
     assert!(parse_remotes(text).is_empty());
 }
 
+/// Guards fetch parsing against short or empty lines; they must not panic or report changes.
 #[test]
 fn parse_fetch_output_skips_lines_without_fields() {
     assert!(parse_fetch_output("garbage", "origin").is_empty());
     assert!(parse_fetch_output("", "origin").is_empty());
 }
 
+/// Guards that fetched changes reach the report, so the user sees new branches.
 #[test]
 fn a_fetch_with_changes_reports_the_new_branch() {
     let sys = StubSys::new(FetchStub::Changes);
@@ -522,6 +550,7 @@ fn a_fetch_with_changes_reports_the_new_branch() {
     }
 }
 
+/// Guards `current_only` on a detached HEAD; with no branch there is no remote to pick.
 #[test]
 fn a_detached_head_with_current_only_is_a_repository_error() {
     let options = Options {
@@ -542,6 +571,7 @@ fn a_detached_head_with_current_only_is_a_repository_error() {
 struct RefspecLessSys;
 
 impl Sys for RefspecLessSys {
+    /// A remote with a URL but no fetch line is the case the skip line exists for.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
         match argv {
             ["config", "--get-regexp", ..] => Ok(output(0, "remote.empty.url /srv/git.git\n", "")),
@@ -550,6 +580,7 @@ impl Sys for RefspecLessSys {
     }
 }
 
+/// Guards a remote with no refspec; fetch is skipped and reported, since git has nothing to fetch.
 #[test]
 fn a_remote_without_a_refspec_is_a_fetch_skip() {
     let options = Options {
@@ -569,9 +600,8 @@ fn a_remote_without_a_refspec_is_a_fetch_skip() {
     }
 }
 
-/// One branch per silent-skip arm of the branch step, plus an
-/// up-to-date branch, a diverged branch, a branch that cannot
-/// move, and the current branch fast-forwarding.
+/// One branch per silent-skip arm of the branch step, plus up-to-date, diverged and stuck
+/// branches and the current branch fast-forwarding.
 struct SkipSys;
 
 const SKIP_REFS: &str = "refs/heads/main\0aa\0refs/remotes/origin/main\n\
@@ -590,6 +620,7 @@ const SKIP_REFS: &str = "refs/heads/main\0aa\0refs/remotes/origin/main\n\
     refs/remotes/origin/moved\0nn\0\n";
 
 impl Sys for SkipSys {
+    /// Answer each branch's merge base so every arm of the branch step is reached once.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
         match argv {
             ["config", "--get-regexp", ..] => Ok(output(
@@ -613,6 +644,7 @@ impl Sys for SkipSys {
     }
 }
 
+/// Find one branch's outcome by name, since step order is not what these tests check.
 fn branch_outcome<'a>(report: &'a Report, name: &str) -> &'a BranchOutcome {
     report
         .steps
@@ -627,6 +659,7 @@ fn branch_outcome<'a>(report: &'a Report, name: &str) -> &'a BranchOutcome {
         .expect("a branch step for the name")
 }
 
+/// Guards every arm of the branch step in one run; silent skips stay silent and the rest report.
 #[test]
 fn the_branch_step_skips_and_reports_each_arm() {
     let options = Options {
@@ -673,6 +706,7 @@ fn the_branch_step_skips_and_reports_each_arm() {
     }
 }
 
+/// Guards the dirty work tree case; git's wording must map to "uncommitted changes".
 #[test]
 fn a_merge_failure_with_the_local_changes_wording_reports_uncommitted_changes() {
     let sys = BranchSys {
@@ -692,6 +726,7 @@ fn a_merge_failure_with_the_local_changes_wording_reports_uncommitted_changes() 
     }
 }
 
+/// Guards the wording match against false positives; blaming local changes needs both phrases.
 #[test]
 fn a_merge_failure_mentioning_only_local_changes_is_a_plain_merge_failure() {
     let sys = BranchSys {
@@ -713,6 +748,7 @@ fn a_merge_failure_mentioning_only_local_changes_is_a_plain_merge_failure() {
 struct ExecSys;
 
 impl Sys for ExecSys {
+    /// Answer the repository lookups that `exec_repo` makes first.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
         match argv {
             ["rev-parse", "--absolute-git-dir"] => Ok(output(0, "/repo/.git\n", "")),
@@ -721,11 +757,13 @@ impl Sys for ExecSys {
         }
     }
 
+    /// Return fixed output, so the test can check both streams reach the report.
     fn exec(&self, _dir: &Path, _argv: &[String]) -> io::Result<Output> {
         Ok(output(0, "hello\n", "warn\n"))
     }
 }
 
+/// Guards that exec output is passed through raw, with both streams and no error.
 #[test]
 fn exec_reports_the_command_output() {
     let report = exec_repo(&ExecSys, Path::new("/repo"), "repo", &["ls".to_owned()]);
@@ -735,6 +773,7 @@ fn exec_reports_the_command_output() {
     assert_eq!(report.error, None);
 }
 
+/// Guards a bare reference name; it is kept whole when there are no prefix parts to drop.
 #[test]
 fn parse_fetch_output_keeps_a_reference_with_no_parts_to_drop() {
     let text = "\n* 0 0 v1\n";
@@ -744,6 +783,7 @@ fn parse_fetch_output_keeps_a_reference_with_no_parts_to_drop() {
     );
 }
 
+/// Guards grouping; repeated kinds share one group so each kind prints once.
 #[test]
 fn parse_fetch_output_groups_repeated_kinds_together() {
     let text = "* 0 0 refs/remotes/origin/a\n* 0 0 refs/remotes/origin/b\n";
@@ -753,6 +793,7 @@ fn parse_fetch_output_groups_repeated_kinds_together() {
     );
 }
 
+/// Guards parsing of each fetch flag; forced updates are not reported and names lose their prefix.
 #[test]
 fn parse_fetch_output_classifies_and_names() {
     let text = "  1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 refs/remotes/origin/main\n* 0000000000000000000000000000000000000000 3333333333333333333333333333333333333333 refs/remotes/origin/feat\n* 0000000000000000000000000000000000000000 4444444444444444444444444444444444444444 refs/tags/v1\n+ 1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 refs/remotes/origin/forced\n";

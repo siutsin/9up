@@ -2,8 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::sys::Sys;
 
-/// A Report carries data only, so milestone 2 can collect reports from
-/// many threads and main can render them in path order.
+/// Data only, so milestone 2 can collect reports from many threads and main render them by path.
 pub struct Report {
     pub name: String,
     pub steps: Vec<Step>,
@@ -49,6 +48,7 @@ pub struct Options {
     pub prune: bool,
 }
 
+/// Most git queries need only an answer or its absence, so every failure becomes `None`.
 fn git_text(sys: &dyn Sys, dir: &Path, argv: &[&str]) -> Option<String> {
     let output = sys.git(dir, argv).ok()?;
     if !output.status.success() {
@@ -62,8 +62,7 @@ struct RepoInfo {
     bare: bool,
 }
 
-/// Let git answer where the repository lives. A bare repository has no
-/// top level, so its working directory is the git directory.
+/// Ask git where the repository lives. A bare one has no top level, so its work dir is the git dir.
 fn repo_info(sys: &dyn Sys, path: &Path) -> Option<RepoInfo> {
     let git_dir = PathBuf::from(git_text(sys, path, &["rev-parse", "--absolute-git-dir"])?);
     let top = git_text(sys, path, &["rev-parse", "--show-toplevel"]);
@@ -77,8 +76,7 @@ struct Remote {
     refspecs: Vec<String>,
 }
 
-/// The remotes in configuration order, with their fetch refspecs, from
-/// one `git config` call.
+/// Remotes in config order with their fetch refspecs, from one `git config` call.
 fn remotes(sys: &dyn Sys, path: &Path) -> Vec<Remote> {
     let Some(text) = git_text(sys, path, &["config", "--get-regexp", "^remote\\."]) else {
         return Vec::new();
@@ -86,6 +84,7 @@ fn remotes(sys: &dyn Sys, path: &Path) -> Vec<Remote> {
     parse_remotes(&text)
 }
 
+/// Kept apart from `remotes` so config parsing is testable without git.
 fn parse_remotes(text: &str) -> Vec<Remote> {
     let mut remotes: Vec<Remote> = Vec::new();
     for line in text.lines() {
@@ -115,17 +114,15 @@ fn parse_remotes(text: &str) -> Vec<Remote> {
     remotes
 }
 
-/// The current branch's full name without the `refs/heads/` prefix.
-/// None means a detached HEAD. Never `--short`: a tag with the same
-/// name would change the answer.
+/// Full current branch name without `refs/heads/`; `None` on a detached HEAD.
+/// Never `--short`: a same-named tag would change the answer.
 fn current_branch(sys: &dyn Sys, path: &Path) -> Option<String> {
     let full = git_text(sys, path, &["symbolic-ref", "-q", "HEAD"])?;
     full.strip_prefix("refs/heads/").map(str::to_owned)
 }
 
-/// The remote the branch tracks, from its configuration. Both the
-/// remote and the merge ref must be set. Configuration works on an
-/// unborn branch, where no refs exist yet.
+/// The branch's tracked remote from config; both remote and merge must be set.
+/// Config works on an unborn branch, which has no refs yet.
 fn tracked_remote(sys: &dyn Sys, path: &Path, branch: &str) -> Option<String> {
     let remote = git_text(
         sys,
@@ -140,7 +137,7 @@ fn tracked_remote(sys: &dyn Sys, path: &Path, branch: &str) -> Option<String> {
     Some(remote)
 }
 
-/// A report that holds one repository error and nothing else.
+/// A report holding only one repository error.
 fn failed(name: &str, message: &str) -> Report {
     Report {
         name: name.to_owned(),
@@ -148,6 +145,7 @@ fn failed(name: &str, message: &str) -> Report {
     }
 }
 
+/// Fetch chosen remotes, then fast-forward branches; a `Report` lets only the front end print.
 pub fn update_repo(sys: &dyn Sys, path: &Path, name: &str, options: &Options) -> Report {
     let mut report = Report {
         name: name.to_owned(),
@@ -167,9 +165,8 @@ pub fn update_repo(sys: &dyn Sys, path: &Path, name: &str, options: &Options) ->
                 if all_remotes.is_empty() {
                     return failed(name, "No remotes.");
                 }
-                // Not in the configuration at all: same outcome as a
-                // refspec-less remote, the fetch skip line. Not a
-                // repository error, so the branch step still runs.
+                // Unconfigured: a fetch skip like a refspec-less remote. Not a repository error,
+                // so the branch step still runs.
                 report.steps.push(Step::Fetch {
                     remote: remote_name,
                     outcome: FetchOutcome::NoRefspec,
@@ -214,14 +211,14 @@ pub fn update_repo(sys: &dyn Sys, path: &Path, name: &str, options: &Options) ->
     report
 }
 
-/// One branch from the snapshot: its name, its SHA, and the full
-/// reference of its upstream (empty when it has none).
+/// A snapshot branch: name, SHA and full upstream reference, empty when it has none.
 struct Branch {
     name: String,
     sha: String,
     upstream: String,
 }
 
+/// Fast-forward branches to upstream; merge only the checked-out one so its work tree keeps up.
 fn branch_step(
     sys: &dyn Sys,
     path: &Path,
@@ -336,6 +333,7 @@ fn branch_step(
     }
 }
 
+/// Record a moved branch and update the snapshot, so later branches tracking it see the new SHA.
 fn push_updated(
     steps: &mut Vec<Step>,
     branches: &[Branch],
@@ -358,8 +356,7 @@ fn push_updated(
     });
 }
 
-/// The lines of a git error output that carry the failure: the trimmed
-/// lines starting with `error:` or `fatal:`.
+/// The trimmed git stderr lines that carry the failure: those starting `error:` or `fatal:`.
 fn git_error_lines(stderr: &str) -> Vec<String> {
     stderr
         .lines()
@@ -369,6 +366,7 @@ fn git_error_lines(stderr: &str) -> Vec<String> {
         .collect()
 }
 
+/// Fetch one remote with `--porcelain`, so changes are parsed, not scraped from human text.
 fn fetch(sys: &dyn Sys, path: &Path, remote: &str, prune: bool) -> FetchOutcome {
     let mut argv = vec!["fetch", "--porcelain"];
     if prune {
@@ -397,16 +395,14 @@ fn fetch(sys: &dyn Sys, path: &Path, remote: &str, prune: bool) -> FetchOutcome 
     }
 }
 
-/// The changed references in fetch porcelain output, grouped by kind.
-/// A `*` flag is a new reference, a line with an old and a new value is
-/// an update, and every other flag is not reported.
+/// Changed references in fetch porcelain output, grouped by kind. A `*` flag is a new reference,
+/// a line with old and new values is an update, and other flags are not reported.
 fn parse_fetch_output(text: &str, remote: &str) -> Vec<(Kind, Vec<String>)> {
     let remote_prefix = format!("refs/remotes/{remote}/");
     let mut groups: Vec<(Kind, Vec<String>)> = Vec::new();
     for line in text.lines() {
-        // The line is <flag><space><old> <new> <ref>. The flag of an
-        // update line is itself a space, so the fields start after the
-        // first two characters.
+        // The line is <flag><space><old> <new> <ref>. An update's flag is itself a space,
+        // so the fields start after the first two characters.
         let mut chars = line.chars();
         let Some(flag) = chars.next() else { continue };
         let rest = chars.as_str().strip_prefix(' ').unwrap_or(chars.as_str());
@@ -440,9 +436,8 @@ fn parse_fetch_output(text: &str, remote: &str) -> Vec<(Kind, Vec<String>)> {
     groups
 }
 
-/// The result of running the exec command in one repository: its
-/// standard output and standard error as raw text, or the error line
-/// when the command could not start. main splits the text into lines.
+/// One repository's exec result: raw stdout and stderr, or the error line if the command
+/// could not start. main splits the text into lines.
 pub struct ExecReport {
     pub name: String,
     pub stdout: String,
@@ -450,8 +445,7 @@ pub struct ExecReport {
     pub error: Option<String>,
 }
 
-/// Run the command without a shell in the repository's working
-/// directory (the repository directory itself for a bare repository).
+/// Run the command without a shell in the work dir, or the repository dir if bare.
 /// The exit status is ignored.
 pub fn exec_repo(sys: &dyn Sys, path: &Path, name: &str, command: &[String]) -> ExecReport {
     let blank = |error: Option<String>| ExecReport {

@@ -5,27 +5,22 @@ use toml_edit::{Array, DocumentMut, Item, Value};
 
 use crate::sys::Sys;
 
-/// The config file for a run: an explicit `-C` path wins; an empty or
-/// missing flag means `config.toml` in a `9up` folder under the platform
+/// The config file: a non-empty `-C` path wins, else `9up/config.toml` under the platform
 /// config directory, or under `.config` when the platform has none.
 pub fn file_path(flag: Option<&str>, config_dir: Option<&Path>) -> PathBuf {
     if let Some(path) = flag.filter(|path| !path.is_empty()) {
         return PathBuf::from(path);
     }
-    // The config directory comes from `dirs` (see main): on Linux a
-    // relative XDG_CONFIG_HOME is ignored, as the specification
-    // requires. No config directory at all falls back to `.config`.
+    // `config_dir` comes from `dirs` (see main), which on Linux ignores a relative
+    // XDG_CONFIG_HOME, as the specification requires. None falls back to `.config`.
     let config = config_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(".config"));
     config.join("9up").join("config.toml")
 }
 
-/// The config file's entries, in file order.
-///
-/// A missing or unreadable file means no repositories. A file that is
-/// not valid TOML, whose content is not valid UTF-8, or whose
-/// `repositories` value is not an array of strings cannot be parsed:
+/// The config file's entries, in file order. A missing or unreadable file means no repositories.
+/// Invalid UTF-8, invalid TOML, or a `repositories` value that is not an array of strings fails:
 /// the error prints to standard error and the run exits 1.
 pub fn load(sys: &dyn Sys, path: &Path) -> io::Result<Vec<String>> {
     let Ok(bytes) = sys.read(path) else {
@@ -34,16 +29,13 @@ pub fn load(sys: &dyn Sys, path: &Path) -> io::Result<Vec<String>> {
     entries(&parse(path, bytes)?, path)
 }
 
-/// Write the entries by editing the file's document in place, so
-/// comments and any other keys stay as they are; only the
-/// `repositories` array changes. A file that does not exist yet is
-/// created as the one key, with each entry on its own line.
+/// Edit the file's document in place: only `repositories` changes; comments and other keys stay.
+/// A missing file is created with that one key, one entry per line.
 pub fn save(sys: &dyn Sys, path: &Path, entries: &[String]) -> io::Result<()> {
     let mut doc = match sys.read(path) {
         Ok(bytes) => parse(path, bytes)?,
-        // Only a missing file starts a fresh document. Any other read
-        // failure is an error: overwriting would drop the file's
-        // other keys unseen.
+        // Only a missing file starts fresh. Any other read failure is an error:
+        // overwriting would drop the file's other keys unseen.
         Err(err) if err.kind() == io::ErrorKind::NotFound => DocumentMut::new(),
         Err(err) => return Err(err),
     };
@@ -58,15 +50,12 @@ pub fn save(sys: &dyn Sys, path: &Path, entries: &[String]) -> io::Result<()> {
     sys.write(path, text.as_bytes())
 }
 
-/// Bring an existing array to the entry list without rebuilding it:
-/// values the list no longer holds are removed, values it adds are
-/// appended. Kept values keep their formatting and their comments.
+/// Update the array in place, not rebuilt: drop values the list lost, append values it gained.
+/// Kept values keep their formatting and comments.
 fn sync_array(array: &mut Array, entries: &[String]) {
-    // The kept values are the longest prefix of the entry list that
-    // already appears in the array in order: everything else in the
-    // array goes, and the rest of the list is appended. Matching in
-    // order keeps duplicates straight — with ["/a", "/b", "/a"] and
-    // a list of ["/b", "/a"], the first "/a" is the one removed.
+    // Keep the longest prefix of the list found in the array in order; drop the rest of the
+    // array and append the rest of the list. In-order matching keeps duplicates straight:
+    // with ["/a", "/b", "/a"] and a list of ["/b", "/a"], the first "/a" goes.
     let mut keep = vec![false; array.len()];
     let mut scan = 0;
     let mut kept = 0;
@@ -91,10 +80,8 @@ fn sync_array(array: &mut Array, entries: &[String]) {
             keep.remove(index);
         }
     }
-    // Removing the last value can take the line break before the
-    // closing bracket with it: the bracket would glue onto the last
-    // value's line, and a comment there would comment it out. A
-    // multiline array gets the break back.
+    // Removing the last value can take the break before `]` with it, gluing `]` onto the last
+    // value's line, where a comment would comment it out. A multiline array gets the break back.
     let trailing = array.trailing().as_str().unwrap_or_default();
     let multiline =
         trailing.contains('\n') || array.iter().any(|value| prefix_of(value).contains('\n'));
@@ -105,9 +92,8 @@ fn sync_array(array: &mut Array, entries: &[String]) {
         return;
     }
     let was_empty = array.is_empty();
-    // A comment that trails the last value on its own line sits in
-    // the array's trailing text. The first new value takes it as a
-    // prefix, so the comment stays on that line.
+    // A comment after the last value, on its line, sits in the array's trailing text.
+    // The first new value takes it as a prefix, so the comment stays on that line.
     let trailing = array.trailing().as_str().unwrap_or_default().to_owned();
     let mut first_prefix = None;
     if !trailing.starts_with('\n')
@@ -132,13 +118,10 @@ fn sync_array(array: &mut Array, entries: &[String]) {
     }
 }
 
-/// toml_edit stores the raw text around a value on the value itself:
-/// a comment before it in its prefix, a comment after it (before its
-/// comma) in its suffix. Both can hold a comment that must survive
-/// the value's removal, so move them out first: the prefix comment
-/// forward to the next value, the suffix comment back onto the
-/// previous value's line when that line has no comment of its own,
-/// and forward when there is no previous value.
+/// `toml_edit` stores a value's raw text on the value: a comment before it in its prefix, one
+/// after it (before its comma) in its suffix. Before removal, move the prefix comment forward to
+/// the next value, and the suffix comment back onto the previous value's line when that line has
+/// no comment of its own, or forward when there is no previous value.
 fn rescue_comments(array: &mut Array, index: usize) {
     let (prefix, suffix) = array
         .get(index)
@@ -147,9 +130,8 @@ fn rescue_comments(array: &mut Array, index: usize) {
     let head = comment_head(prefix);
     let mut notes = suffix_comments(suffix).into_iter();
     let mut forward: Vec<String> = Vec::new();
-    // The first suffix comment moves back onto the previous value's
-    // line when that line has no comment of its own; the rest go
-    // forward, in file order after the head comment.
+    // The first suffix comment moves back if the previous value's line has no comment;
+    // the rest go forward, in file order after the head comment.
     if let Some(first) = notes.next() {
         let mut moved_back = false;
         if index > 0
@@ -175,11 +157,8 @@ fn rescue_comments(array: &mut Array, index: usize) {
     }
 }
 
-/// The comments inside a raw suffix, one per line that holds one,
-/// each in the " # ..." form a comment takes after a value. A
-/// suffix can span lines: the last value's suffix reaches the
-/// closing bracket, so a comment on its own line before the
-/// bracket lives there too.
+/// Each comment line of a raw suffix, in the " # ..." form a comment takes after a value. The last
+/// value's suffix reaches `]`, so it spans lines and holds any own-line comment before `]` too.
 fn suffix_comments(suffix: &str) -> Vec<String> {
     suffix
         .lines()
@@ -206,9 +185,8 @@ fn suffix_of(value: &Value) -> &str {
         .unwrap_or_default()
 }
 
-/// The part of a raw prefix before its final line break, when it
-/// holds a comment. The break and the indentation after it belong
-/// to the value the prefix precedes.
+/// A raw prefix up to its final line break, when that holds a comment. The break and the
+/// indentation after it belong to the following value.
 fn comment_head(prefix: &str) -> Option<String> {
     let head = match prefix.rfind('\n') {
         Some(index) => &prefix[..index],
@@ -226,8 +204,7 @@ fn line_comment(text: &str) -> Option<String> {
     line.contains('#').then(|| line.to_owned())
 }
 
-/// Move a rescued comment to the next value's prefix, or to the
-/// array's trailing text when the removed value was last.
+/// Move a rescued comment to the next value's prefix, or the array's trailing text if none.
 fn move_forward(array: &mut Array, index: usize, text: &str) {
     if let Some(next) = array.get_mut(index + 1) {
         let old = prefix_of(next).to_owned();
@@ -238,10 +215,8 @@ fn move_forward(array: &mut Array, index: usize, text: &str) {
     }
 }
 
-/// Join a rescued comment onto the raw text that follows it. When
-/// that text opens on the same line (a comment of its own), the
-/// rescued comment takes its own line first, so the two comments
-/// never merge into one.
+/// Join a rescued comment onto the following raw text. If that text opens on the same line
+/// (a comment of its own), break the line first so the two comments never merge.
 fn join(head: &str, rest: &str) -> String {
     if rest.is_empty() || rest.starts_with('\n') {
         return format!("{head}{rest}");
@@ -256,10 +231,8 @@ fn join(head: &str, rest: &str) -> String {
     )
 }
 
-/// The whitespace a new value takes: the last value's line break and
-/// indentation, with any comment in its raw decor left out. An inline
-/// array takes a space. An empty array takes the one-key document's
-/// one-entry-per-line form.
+/// A new value's whitespace: the last value's line break and indentation, minus any decor comment.
+/// An inline array takes a space; an empty one, the one-key document's one-entry-per-line form.
 fn append_prefix(array: &Array) -> String {
     let Some(last) = array.iter().last() else {
         return "\n    ".to_owned();
@@ -271,12 +244,14 @@ fn append_prefix(array: &Array) -> String {
     }
 }
 
+/// Shared by `load` and `save`, so both reject the same bad files with the same message.
 fn parse(path: &Path, bytes: Vec<u8>) -> io::Result<DocumentMut> {
     let text = String::from_utf8(bytes).map_err(|err| unparseable(path, err))?;
     text.parse::<DocumentMut>()
         .map_err(|err| unparseable(path, err))
 }
 
+/// Read `repositories` strictly, so a wrong type is an error and not an empty list.
 fn entries(doc: &DocumentMut, path: &Path) -> io::Result<Vec<String>> {
     let Some(item) = doc.get("repositories") else {
         return Ok(Vec::new());
@@ -295,6 +270,7 @@ fn entries(doc: &DocumentMut, path: &Path) -> io::Result<Vec<String>> {
         .collect()
 }
 
+/// Written one entry per line, so each add or delete changes a single line in version control.
 fn repositories_array(entries: &[String]) -> Array {
     let mut array = Array::new();
     for entry in entries {
@@ -306,6 +282,7 @@ fn repositories_array(entries: &[String]) -> Array {
     array
 }
 
+/// One error form for every parse failure, so the message names the file.
 fn unparseable(path: &Path, err: impl std::fmt::Display) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -313,6 +290,7 @@ fn unparseable(path: &Path, err: impl std::fmt::Display) -> io::Error {
     )
 }
 
+/// The error for a `repositories` value of the wrong type, so the user knows what to fix.
 fn not_strings(path: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -323,8 +301,7 @@ fn not_strings(path: &Path) -> io::Error {
     )
 }
 
-/// The stored form of a path: absolute, normalised with no filesystem
-/// access. A leading `~` stays, and only the rest is normalised.
+/// A path's stored form: absolute, normalised without filesystem access. A leading `~` stays.
 pub fn normalize(path: &str, cwd: &Path) -> String {
     if path.is_empty() {
         return cwd.to_string_lossy().into_owned();

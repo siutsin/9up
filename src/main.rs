@@ -16,6 +16,7 @@ use clap::Parser;
 use cli::{Cli, Command, UpdateArgs};
 use sys::{App, RealSys};
 
+/// Composition root: only here reads the environment and builds services, so all below is testable.
 fn main() -> ExitCode {
     let cli = Cli::parse_from(cli::argv());
     let stdout = io::stdout();
@@ -28,8 +29,7 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         };
     }
-    // The composition root: every service and resolved value is built
-    // here and passed down in the context.
+    // Every service and resolved value is built here and passed down in the context.
     // `list` and `clean` never need the cwd (configured paths are
     // absolute), so a deleted or unreadable cwd must not fail them.
     let cwd = match env::current_dir() {
@@ -63,6 +63,7 @@ fn main() -> ExitCode {
     }
 }
 
+/// Dispatch apart from `main`, so one place maps every command's I/O error to an exit code.
 fn run(app: &mut App, cli: &Cli) -> io::Result<ExitCode> {
     match &cli.command {
         Some(Command::Add { paths }) => commands::add(app, paths),

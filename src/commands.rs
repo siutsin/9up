@@ -6,6 +6,7 @@ use crate::render::{BOLD_GREEN, RED, paint, print_header, red_line, render_repor
 use crate::sys::App;
 use crate::{config, discover, update};
 
+/// Normalise each path before the check, so no repository is stored twice under two spellings.
 pub(crate) fn add(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
     let out = &mut *app.out;
     let mut entries = config::load(&*app.sys, &app.config_file)?;
@@ -22,6 +23,7 @@ pub(crate) fn add(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Save only on a change, so deleting unknown paths leaves the config file untouched.
 pub(crate) fn delete(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
     let out = &mut *app.out;
     let mut entries = config::load(&*app.sys, &app.config_file)?;
@@ -42,6 +44,7 @@ pub(crate) fn delete(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Print the config as stored; an empty one prints a message, so blank output is never ambiguous.
 pub(crate) fn list(app: &mut App) -> io::Result<ExitCode> {
     let out = &mut *app.out;
     let entries = config::load(&*app.sys, &app.config_file)?;
@@ -54,6 +57,7 @@ pub(crate) fn list(app: &mut App) -> io::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// With no paths given, use the configured ones; if none exist, point a new user to `9up add`.
 pub(crate) fn update(app: &mut App, args: &UpdateArgs) -> io::Result<ExitCode> {
     let inputs: Vec<String> = if args.paths.is_empty() {
         let entries = config::load(&*app.sys, &app.config_file)?;
@@ -80,6 +84,7 @@ pub(crate) fn update(app: &mut App, args: &UpdateArgs) -> io::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Drop entries whose paths are gone, keeping comment entries, so stale paths do not pile up.
 pub(crate) fn clean(app: &mut App) -> io::Result<ExitCode> {
     let out = &mut *app.out;
     let entries = config::load(&*app.sys, &app.config_file)?;
@@ -90,8 +95,7 @@ pub(crate) fn clean(app: &mut App) -> io::Result<ExitCode> {
     let mut kept = Vec::new();
     let mut removed = false;
     for entry in &entries {
-        // A comment entry is not a path, so the liveness test below
-        // cannot judge it. The plan keeps it.
+        // A comment entry is not a path the liveness test can judge; the plan keeps it.
         if discover::comment_text(entry).is_some() {
             kept.push(entry.clone());
             continue;
@@ -112,6 +116,7 @@ pub(crate) fn clean(app: &mut App) -> io::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Print each repository's output under its name, so one command's results stay readable.
 pub(crate) fn exec(
     app: &mut App,
     paths: &[String],
@@ -140,9 +145,8 @@ pub(crate) fn exec(
     Ok(ExitCode::SUCCESS)
 }
 
-/// The walk `update` and `exec` share: resolve each input in turn, print
-/// its group header, and run `op` on every repository found. A comment
-/// input prints as a line of its own; a bad path prints in red.
+/// Shared by `update` and `exec`: resolve each input in turn, print its group header, run `op`
+/// on every repository found. A comment input prints as its own line; a bad path prints in red.
 fn for_each_repo(
     app: &mut App,
     inputs: &[String],
