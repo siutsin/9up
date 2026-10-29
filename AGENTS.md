@@ -4,7 +4,8 @@ Read the plan in `.agents/planning.md` before you change code.
 
 Setup is in `README.md`. Verify every change with `cargo fmt --check`,
 `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked` and `markdownlint-cli2 '**/*.md'`.
-Coverage is a gate: `mise run coverage` fails when production code is below 100% line coverage. Unit tests live in `src/<module>/tests.rs`.
+Coverage is a gate: `mise run coverage` fails unless one test run covers every production function
+in full, checked by the xtask crate. Unit tests live in `src/<module>/tests.rs`.
 
 ## Rules
 

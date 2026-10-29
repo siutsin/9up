@@ -793,6 +793,37 @@ fn parse_fetch_output_groups_repeated_kinds_together() {
     );
 }
 
+/// Guards that a branch the snapshot does not hold still records its step; only a held
+/// branch gets its snapshot SHA moved, so the lookup must tolerate a miss.
+#[test]
+fn push_updated_records_the_step_when_the_snapshot_lacks_the_branch() {
+    let branches = [Branch {
+        name: "main".to_owned(),
+        sha: "aa".to_owned(),
+        upstream: "refs/remotes/origin/main".to_owned(),
+    }];
+    let mut shas = vec![("refs/remotes/origin/main".to_owned(), "cc".to_owned())];
+    let mut steps = Vec::new();
+    push_updated(&mut steps, &branches, &mut shas, 0, "bb");
+    match &steps[..] {
+        [
+            Step::Branch {
+                name,
+                outcome: BranchOutcome::Updated { from, to },
+            },
+        ] => {
+            assert_eq!(name, "main");
+            assert_eq!(from, "aa");
+            assert_eq!(to, "bb");
+        }
+        _ => panic!("unexpected steps"),
+    }
+    assert_eq!(
+        shas,
+        [("refs/remotes/origin/main".to_owned(), "cc".to_owned())]
+    );
+}
+
 /// Guards parsing of each fetch flag; forced updates are not reported and names lose their prefix.
 #[test]
 fn parse_fetch_output_classifies_and_names() {

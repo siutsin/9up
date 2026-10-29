@@ -283,7 +283,7 @@ fn branch_step(
                 outcome: BranchOutcome::Skipped("a fast-forward is not possible".to_owned()),
             });
         } else if !bare && current.as_deref() == Some(name.as_str()) {
-            match sys.git(path, &["merge", "--ff-only", &upstream_ref]) {
+            match sys.git(path, &["merge", "--ff-only", "--", &upstream_ref]) {
                 Ok(output) if output.status.success() => {
                     push_updated(steps, &branches, &mut shas, index, &upstream_sha);
                 }

@@ -97,7 +97,7 @@ pub fn resolve(input: &str, cwd: &Path, home: Option<&Path>, depth: i32) -> Reso
             }
             // `**` matches a parent directory and the repository below it, so a path can repeat.
             let mut seen = std::collections::HashSet::new();
-            repos.retain(|repo| seen.insert(repo.path.clone()));
+            repos.retain(|repo| seen.insert(canonical_key(&repo.path)));
             repos.sort_by(|a, b| a.name.cmp(&b.name));
             Resolved::Repos(repos)
         }
@@ -153,6 +153,12 @@ fn is_repo(path: &Path) -> bool {
     false
 }
 
+/// The key two spellings of one directory share: its canonical path, or the path itself
+/// when that cannot be resolved.
+fn canonical_key(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// Repositories at and below `dir`, down to `depth` levels (negative means no limit). Names are
 /// relative to `header`, except a repository at `dir` itself, which takes its last component.
 fn search(dir: &Path, depth: i32, header: &Path) -> Vec<Repo> {
@@ -162,12 +168,16 @@ fn search(dir: &Path, depth: i32, header: &Path) -> Vec<Repo> {
             path: dir.to_path_buf(),
         }];
     }
+    // A negative depth becomes the unlimited case.
+    let max_depth = depth.try_into().unwrap_or(usize::MAX);
     let walk = WalkDir::new(dir)
         .follow_links(true)
         .min_depth(1)
-        // A negative depth becomes the unlimited case.
-        .max_depth(depth.try_into().unwrap_or(usize::MAX));
+        .max_depth(max_depth);
     let mut repos = Vec::new();
+    // A link can reach a directory under a second name; walk each physical directory once,
+    // or an aliased repository is reported once per spelling.
+    let mut visited = std::collections::HashSet::from([canonical_key(dir)]);
     let mut iter = walk.into_iter();
     while let Some(entry) = iter.next() {
         // Skip an unreadable directory or a symbolic link loop, which walkdir reports as an error.
@@ -180,12 +190,22 @@ fn search(dir: &Path, depth: i32, header: &Path) -> Vec<Repo> {
             iter.skip_current_dir();
             continue;
         }
+        let key = canonical_key(path);
+        if visited.contains(&key) {
+            iter.skip_current_dir();
+            continue;
+        }
         if is_repo(path) {
+            visited.insert(key);
             repos.push(Repo {
                 name: name_for(path, header),
                 path: entry.into_path(),
             });
             iter.skip_current_dir(); // A found repository is not descended into.
+        } else if entry.depth() < max_depth {
+            // A directory at the depth limit is never descended, so marking it visited
+            // would block a shallower spelling of it that still can be.
+            visited.insert(key);
         }
     }
     repos

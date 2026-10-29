@@ -55,14 +55,56 @@ fn base(dir: &Path, program: &str) -> Command {
     command
 }
 
+/// Build the git command: the `-c` pairs come first and neutralise the config keys that run
+/// commands, and inherited `GIT_*` state is dropped, so a discovered repository's own config
+/// cannot execute code or redirect the call during a fetch or merge.
+fn git_command(dir: &Path, argv: &[&str]) -> Command {
+    let mut command = base(dir, "git");
+    command
+        .args([
+            "-c",
+            "protocol.ext.allow=never",
+            "-c",
+            // The stock ssh, not an empty value: an empty one is a command git cannot run.
+            "core.sshCommand=ssh",
+            "-c",
+            "core.fsmonitor=",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
+        .args(argv)
+        .env("LC_ALL", "C")
+        .env("LANGUAGE", "C");
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_SSH_COMMAND",
+        "GIT_SSH",
+        "GIT_ASKPASS",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_GLOBAL",
+    ] {
+        command.env_remove(name);
+    }
+    for (name, _) in std::env::vars_os() {
+        let text = name.to_string_lossy();
+        if text.starts_with("GIT_CONFIG_KEY_") || text.starts_with("GIT_CONFIG_VALUE_") {
+            command.env_remove(&name);
+        }
+    }
+    command
+}
+
 impl Sys for RealSys {
     /// Pin the C locale, as the update logic parses git's English messages.
     fn git(&self, dir: &Path, argv: &[&str]) -> io::Result<Output> {
-        base(dir, "git")
-            .args(argv)
-            .env("LC_ALL", "C")
-            .env("LANGUAGE", "C")
-            .output()
+        git_command(dir, argv).output()
     }
 
     /// Run the user's program without a shell, so paths and arguments are never reinterpreted.
