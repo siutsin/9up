@@ -82,7 +82,8 @@ pub fn resolve(input: &str, cwd: &Path, home: Option<&Path>, depth: i32) -> Reso
             if let Some(comment) = comment_text(input) {
                 return Resolved::Comment(comment);
             }
-            if !has_glob_chars(input) {
+            // Only a missing path with these characters is tried as a glob, so a typo stays a missing path.
+            if !input.chars().any(|c| matches!(c, '*' | '?' | '[')) {
                 return Resolved::PathError(format!("{display} doesn't exist."));
             }
             let pattern = fs_path.display().to_string();
@@ -90,7 +91,17 @@ pub fn resolve(input: &str, cwd: &Path, home: Option<&Path>, depth: i32) -> Reso
             if matches.is_empty() {
                 return Resolved::PathError(format!("{display} doesn't exist."));
             }
-            let prefix = static_prefix(&pattern);
+            let prefix = {
+                let mut prefix = PathBuf::new();
+                for part in Path::new(&pattern).components() {
+                    let text = part.as_os_str().to_string_lossy();
+                    if text.chars().any(|c| matches!(c, '*' | '?' | '[')) {
+                        break;
+                    }
+                    prefix.push(part.as_os_str());
+                }
+                prefix
+            };
             let mut repos = Vec::new();
             for matched in &matches {
                 repos.extend(search(matched, depth, &prefix));
@@ -113,11 +124,6 @@ pub fn comment_text(input: &str) -> Option<String> {
     }
     let text = trimmed.trim_start_matches('#').trim();
     Some(text.to_owned())
-}
-
-/// Only a missing path with these characters is tried as a glob, so a typo stays a missing path.
-fn has_glob_chars(input: &str) -> bool {
-    input.chars().any(|c| matches!(c, '*' | '?' | '['))
 }
 
 /// A git directory: a HEAD file, a refs directory, and an objects
@@ -217,11 +223,7 @@ fn name_for(repo: &Path, header: &Path) -> String {
         return last_component(repo);
     }
     match repo.strip_prefix(header) {
-        Ok(relative) => relative
-            .components()
-            .map(|part| part.as_os_str().to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("/"),
+        Ok(relative) => relative.display().to_string(),
         Err(_) => last_component(repo),
     }
 }
@@ -231,19 +233,6 @@ fn last_component(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
-}
-
-/// The part of a glob pattern before its first wildcard component.
-fn static_prefix(pattern: &str) -> PathBuf {
-    let mut prefix = PathBuf::new();
-    for part in Path::new(pattern).components() {
-        let text = part.as_os_str().to_string_lossy();
-        if text.chars().any(|c| matches!(c, '*' | '?' | '[')) {
-            break;
-        }
-        prefix.push(part.as_os_str());
-    }
-    prefix
 }
 
 #[cfg(test)]

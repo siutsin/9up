@@ -82,6 +82,11 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
      (`walkdir` reports the loop as an error entry).
    - Depth: the path itself is depth 0. A repository directly below the path is depth 1. Depth `d` finds
      repositories down to `d` levels below the path. The search does not descend into a repository it found.
+   - A repository the search reaches under more than one spelling — a symbolic-link alias, or overlapping
+     glob matches — is reported once, under the first spelling reached. The search compares canonical
+     paths to spot the repeat. A directory that is not a repository, first met exactly at the depth limit
+     where the walk cannot descend into it, does not block a shallower spelling of the same directory from
+     being searched.
    - A directory with no repositories below it, including an empty directory, prints its header with a count
      of 0.
    - A path error names the path as given, after `~` expansion. It does not use the absolute form the header
@@ -93,7 +98,8 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
      That remote comes from the branch's configuration, so it works on an unborn branch.
    - A repository error ends the repository: it prints an error line, with no fetch and no branch step. The
      checks run in this order: with `--current-only`, a detached HEAD; then with `--current-only`, no tracked
-     remote; then no remotes at all.
+     remote; then no remotes at all. Before all of them, a `git config` call that cannot run at all — git
+     fails to start, or the call errors — is a repository error: a failed git is never reported as no remotes.
    - Fetch each picked remote in configuration order, and report what the fetch brought in: new branches,
      new tags, updated references, or up to date. A remote with no reference lines in its configuration
      prints a skip line for that remote.
@@ -106,6 +112,14 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
    - A branch with no upstream is skipped silently and prints nothing. So is a branch whose upstream reference
      is missing locally, and a branch whose upstream has no merge base with it. Only a branch that cannot
      fast-forward and a branch blocked by uncommitted changes are skipped with a printed reason.
+   - A branch whose name, or whose upstream's name, is not valid UTF-8 is reported as an error and never
+     updated, when it could otherwise fast-forward: the name 9up reads back is not the name git has, and
+     passing it back could create a new branch under the mangled name. A branch that needs no move keeps
+     the outcome the surrounding bullets give it — a silent skip, up to date, or the fast-forward
+     refusal — because no name is passed back to git. A name that genuinely holds the replacement
+     character is refused the same way: 9up cannot tell it from a name that failed to decode. Branches
+     are processed so that one tracking a local branch is handled after that branch, which is what
+     makes the snapshot rule below hold; the report still lists them in name order.
    - A branch whose upstream is an ancestor of it is up to date. A branch that can fast-forward: the current
      branch updates with `git merge --ff-only`. If the merge fails and its standard error holds both
      `local changes` and `would be overwritten`, the branch is skipped with the uncommitted-changes reason.
@@ -159,7 +173,17 @@ With no home directory at all, the fallback is a relative `.config/9up/config.to
   missing `repositories` key means no repositories.
 - Write: edit the parsed document in place and save it, so comments and any other keys stay as they are;
   only the `repositories` array changes. A write creates the parent directory. When the file does not
-  exist, the new document is the one key, with each entry on its own line.
+  exist, the new document is the one key, with each entry on its own line. A comment is removed with
+  the entry it belongs to; comments on kept entries, and comments in the array's trailing text after
+  the last entry's comma, survive a save. One formatting exception: when the last entry carries a
+  trailing comment and no trailing comma, an appended entry's separator comma lands on its own line;
+  the file stays valid, and the difference is cosmetic. A save writes a temporary sibling file and renames it over
+  the config file, so a failed save never leaves a torn file, and an existing file's permissions
+  carry over to its replacement; renaming replaces a symlinked config
+  path itself instead of writing through it, so after a write the config path is a regular file, not
+  the symlink that was there before. `add`, `delete` and `clean` print their report lines only after
+  the save succeeds. A save that cannot read the existing file, or cannot write, fails with an error
+  that names the file: `cannot read <path>: ...` or `cannot write <path>: ...`.
 - A path is stored as its absolute form, normalised without a filesystem access: duplicate separators
   collapse, `.` parts drop, `..` parts resolve against the parts before them, and a trailing separator
   drops. A leading `~` (alone or as `~/`) keeps it, and the path is only normalised lexically. An empty
@@ -210,14 +234,31 @@ write (which also exits 1).
 pack files. The binary honours the user's own global and system git setup (aliases, credentials, signing,
 `includeIf` rules) because real `git` runs, its behaviour matches the git the user runs by hand, and its
 failure text is git's own words, which the user can search for. Four repository-level keys are the
-exception: every call sets `protocol.ext.allow` to `never` and overrides `core.sshCommand`,
-`core.fsmonitor` and `core.hooksPath`, and inherited `GIT_*` environment state is scrubbed, because a
-discovered repository's config must not run commands during fetch and merge.
+exception: every call sets `protocol.ext.allow` to `never`, `core.sshCommand` to `ssh` (the stock
+ssh), `core.fsmonitor` to empty and `core.hooksPath` to `/dev/null`, because a discovered
+repository's config must not run commands during fetch and merge. The scrub removes the inherited
+variables that would redirect the call or inject configuration — `GIT_DIR`, `GIT_WORK_TREE`,
+`GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_SSH_COMMAND`,
+`GIT_SSH`, `GIT_ASKPASS`, `GIT_PROXY_COMMAND`, `SSH_ASKPASS`, `GIT_CONFIG`, `GIT_CONFIG_COUNT`,
+`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL`, `GIT_EXEC_PATH`,
+`GIT_NAMESPACE` and `GIT_COMMON_DIR` — plus every inherited `GIT_CONFIG_KEY_*` and
+`GIT_CONFIG_VALUE_*` pair. Three residuals stay: a repository's `credential.helper` still runs when
+an https remote asks for credentials, its `core.gitProxy` still runs on a `git://` fetch, and
+filter drivers named through `.gitattributes` still run when a merge checks files out, because git
+offers no override that neutralises a named filter driver. All three stay honoured, like the
+user's own global setup.
 
 `git` must be on the `PATH` at version 2.41 or later. Porcelain output (machine-readable output that does not
 change between releases) only, and never the human progress output. Every call goes through the `Sys`
 seam (see Module Breakdown): `RealSys::git`, with its working directory set to `dir`, `LC_ALL=C` and
 `LANGUAGE=C` in the environment, and a null standard input. No shell, anywhere.
+
+Captured output is bounded: each of a child's streams is capped at 16 MiB, and a stream past the
+cap fails the call with an output-limit error, dropping the captured output. The bound covers
+`git` calls and the `exec` command alike. A child printing forever cannot grow memory without
+limit, and once a stream passes the cap the child is stopped, so a descendant that inherits its
+pipes cannot hold the run open either. A descendant holding a pipe open on a stream under the
+cap is not covered: like `Command::output()`, the call waits for that stream to close.
 
 ### Git Commands Per Repository
 
@@ -239,7 +280,7 @@ otherwise.
 
 ### Dependencies
 
-Five crates, plus one for tests. The standard library covers the rest.
+Four crates, plus one for tests. The standard library covers the rest.
 Every version is pinned exactly (`=` in `Cargo.toml`), so each update arrives as a Renovate pull request
 instead of drifting inside a range. A bump that changes a behaviour this plan states gets a plan update
 in the same pull request.
@@ -249,7 +290,6 @@ in the same pull request.
 | `clap` (derive feature) | Parse the command line: a `Parser` struct with a `Subcommand` enum. |
 | `glob` | Expand the glob patterns that a configured path can contain, with `require_literal_leading_dot` set, as Python skipped dot entries. |
 | `walkdir` | The depth-limited directory search in `discover.rs`: symbolic links followed, loop detection. Order comes from `repos.sort_by(name)` in `resolve()`, not from `WalkDir`, which is unsorted. |
-| `dirs` | The home directory: the lookup behind `~` expansion and the `~/.config` default. |
 | `toml_edit` | The config file: parse the TOML document and edit it in place, changing only the `repositories` array. |
 | `tempfile` (development only) | Temporary directories in integration tests. |
 
@@ -294,7 +334,7 @@ Eight modules in `src/`, one crate, no `lib.rs`. The architecture is a compositi
 direction, 26 Oct 2026): `main` builds one `App` context in `sys.rs` — the `Sys` services, the working
 directory, the home directory, the config file,
 the colour flag and the output — and passes it down.
-Nothing below `main` reads the environment, calls `dirs`, or builds a service. Path probes (metadata,
+Nothing below `main` reads the environment, reads the home directory, or builds a service. Path probes (metadata,
 the `.git` layout, the `walkdir` search) work on path values and need no service.
 
 | File | Contents |
@@ -330,18 +370,21 @@ Three layers:
   helper sets `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, so a developer's git configuration
   (signing, hooks) cannot change a result.
 
-Coverage is a gate. `mise run coverage` runs `cargo llvm-cov` with `--fail-under-regions 100`
-and `--fail-under-functions 100`, so a production code region or function the tests never
-execute fails the run. Test code never counts toward it: the run drops the `tests.rs` files
-by name. Replace the name filter with `#[coverage(off)]` on the test modules once that
-attribute is stable.
+Coverage is a gate. `mise run coverage` runs one `cargo llvm-cov` run that merges the unit and
+integration suites into a single aggregate: a region or function counts as covered when any test
+in either suite executes it. The measured set is the crate's production sources, the eight files
+directly under `src/`. The gate run uses no filename filter: probes on cargo-llvm-cov 0.9.1 showed the old
+`tests.rs` name filter changed nothing, while silently dropping any file that matched it. The run
+keeps `--fail-under-regions 100` and `--fail-under-functions 100`, so a production code region or
+function the tests never execute fails the run. A separate CI job reports branch coverage from a
+nightly toolchain, report only, never a gate.
 
 Behaviour tables, one row per case:
 
 | Area | Cases |
 | --- | --- |
 | Commands | Bare `9up` updates the configured paths and nothing else. Bare `9up <path>` updates only that path. `update` with no paths updates the configured paths. `add x` adds x and updates nothing. `delete`, `list` and `clean` each do only their own job. `-C` works on every command. `-C ""` uses the default path. |
-| Config | Add stores the absolute, normalised path. Add of an existing path reports it as already present. A relative add resolves against the current directory. Delete matches exactly, after normalisation. Delete removes only the first match. Delete of a missing path reports it as not present, and a delete that removes nothing leaves the file unchanged. List prints the paths in file order. Clean removes a missing path and keeps an existing one. Clean keeps a comment entry, and a clean that removes nothing leaves the file unchanged. A TOML comment and an unknown key survive add and delete, unchanged. A file that is not valid TOML, a file that is not valid UTF-8, and one whose `repositories` is not an array of strings, fail with an error and exit 1. A missing `repositories` key means no repositories. The default path is `$XDG_CONFIG_HOME/9up/config.toml` on Linux, `~/Library/Application Support/9up/config.toml` on macOS, and the relative `.config/9up/config.toml` fallback when no config directory is found. A `gitup` bookmark file at the old path is ignored. |
+| Config | Add stores the absolute, normalised path. Add of an existing path reports it as already present. A relative add resolves against the current directory. Delete matches exactly, after normalisation. Delete removes only the first match. Delete of a missing path reports it as not present, and a delete that removes nothing leaves the file unchanged. List prints the paths in file order. Clean removes a missing path and keeps an existing one. Clean keeps a comment entry, and a clean that removes nothing leaves the file unchanged. A TOML comment on a kept entry and an unknown key survive add and delete, unchanged. A file that is not valid TOML, a file that is not valid UTF-8, and one whose `repositories` is not an array of strings, fail with an error and exit 1. A missing `repositories` key means no repositories. The default path is `$XDG_CONFIG_HOME/9up/config.toml`, or `~/.config/9up/config.toml` when the variable is unset, empty or relative, on every platform, macOS included; the relative `.config/9up/config.toml` fallback applies when there is no home directory. A `gitup` bookmark file at the old path is ignored. |
 | Discovery | A repository at the path. Bare repositories: at the path, below the path, and at depth 0. A repository below the path, at each depth from 0 up. A `.git` file (a linked worktree) counts. A directory with no repositories, and an empty directory: header with a count of 0. A file given as a path. A symbolic link to a directory is followed. A broken symbolic link as a path: header with a count of 0. A comment line: never searched, and its text prints with the `#` characters stripped. A glob entry: matches expand; `**` recurses; no match means missing. A `*` pattern does not match a dot-directory. The search does not descend into a found repository. Repositories print in name order. Display names: a repository below the base is named by its path relative to the base. A path that is itself a repository is named by its last component. A glob match is named relative to the deepest common parent of the base and the repository. |
 | Update | Up to date. Behind: fast-forward. Ahead. Diverged: skipped, fast-forward not possible. No upstream: skipped silently, prints nothing. Missing upstream reference: skipped silently, prints nothing. No merge base: skipped silently, prints nothing. Local changes block the current branch: skipped with the uncommitted-changes reason. `--current-only`: only the tracked remote fetches, and the branch step still visits every branch. An unborn branch with `--current-only`: the tracked remote fetches, and the branch step visits nothing. `--fetch-only`: no branch step. `--prune`: a branch deleted on the remote disappears locally. Two remotes: both fetch. First fetch fails: the second remote never fetches, and the branch step still runs. A remote with no reference lines: skip line. A new branch and a new tag arrive, named by the naming rule. A detached HEAD. A bare repository. |
 | Exec | The command runs in the working directory. Standard output prints before standard error. The exit status is ignored. A missing command prints the error line. Arguments after `--` reach the command untouched, quotes included. A `--depth` on exec limits the search the way update's does. `exec` with no command is a usage error, and the config file is unchanged. With no configured paths and no paths given, `exec` prints nothing. |

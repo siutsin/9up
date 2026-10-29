@@ -5,6 +5,8 @@ node = "26.13.0"
 "aqua:taiki-e/cargo-llvm-cov" = "0.9.1"
 
 # The coverage gate, run by CI and by hand. Production code must sit at
-# 100 percent regions and functions; test files are filtered out by name.
+# 100 percent regions and functions. The gate measures the production
+# sources (the src/*.rs files); one cargo llvm-cov run merges the unit
+# and integration suites into a single aggregate.
 [tasks.coverage]
-run = "cargo llvm-cov --locked --ignore-filename-regex 'tests\\.rs$' --fail-under-regions 100 --fail-under-functions 100"
+run = "cargo llvm-cov --locked --fail-under-regions 100 --fail-under-functions 100"

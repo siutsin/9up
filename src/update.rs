@@ -77,11 +77,21 @@ struct Remote {
 }
 
 /// Remotes in config order with their fetch refspecs, from one `git config` call.
-fn remotes(sys: &dyn Sys, path: &Path) -> Vec<Remote> {
-    let Some(text) = git_text(sys, path, &["config", "--get-regexp", "^remote\\."]) else {
-        return Vec::new();
-    };
-    parse_remotes(&text)
+/// Exit 1 is git's no-match answer, not a failure; a git that cannot start or fails
+/// harder is a repository error, not an empty list.
+fn remotes(sys: &dyn Sys, path: &Path) -> Result<Vec<Remote>, String> {
+    let output = sys
+        .git(path, &["config", "--get-regexp", "^remote\\."])
+        .map_err(|err| format!("Could not run git: {err}"))?;
+    if !output.status.success() && output.status.code() != Some(1) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = git_error_lines(&stderr)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| format!("git config failed with {}.", output.status));
+        return Err(message);
+    }
+    Ok(parse_remotes(&String::from_utf8_lossy(&output.stdout)))
 }
 
 /// Kept apart from `remotes` so config parsing is testable without git.
@@ -151,7 +161,10 @@ pub fn update_repo(sys: &dyn Sys, path: &Path, name: &str, options: &Options) ->
         name: name.to_owned(),
         steps: Vec::new(),
     };
-    let all_remotes = remotes(sys, path);
+    let all_remotes = match remotes(sys, path) {
+        Ok(remotes) => remotes,
+        Err(message) => return failed(name, &message),
+    };
     let picked: Vec<&Remote> = if options.current_only {
         let Some(branch) = current_branch(sys, path) else {
             return failed(name, "HEAD is detached, so no remote is tracked.");
@@ -255,7 +268,10 @@ fn branch_step(
             });
         }
     }
-    for index in 0..branches.len() {
+    // Steps land in per-branch slots, so processing can follow local chains while
+    // the report keeps the snapshot's name order.
+    let mut slots: Vec<Option<Step>> = (0..branches.len()).map(|_| None).collect();
+    for index in processing_order(&branches) {
         let branch = &branches[index];
         if branch.upstream.is_empty() {
             continue; // No upstream: skipped silently.
@@ -273,19 +289,34 @@ fn branch_step(
         let name = branch.name.clone();
         let upstream_ref = branch.upstream.clone();
         if base == upstream_sha {
-            steps.push(Step::Branch {
+            slots[index] = Some(Step::Branch {
                 name,
                 outcome: BranchOutcome::UpToDate,
             });
         } else if base != branch.sha {
-            steps.push(Step::Branch {
+            slots[index] = Some(Step::Branch {
                 name,
                 outcome: BranchOutcome::Skipped("a fast-forward is not possible".to_owned()),
+            });
+        } else if branch.name.contains('\u{FFFD}') || branch.upstream.contains('\u{FFFD}') {
+            // A lossy-decoded name cannot be spelled back to git: `branch -f` would
+            // create a new ref under the mangled name instead of moving this one.
+            slots[index] = Some(Step::Branch {
+                name,
+                outcome: BranchOutcome::Error(
+                    "branch or upstream name is not valid UTF-8".to_owned(),
+                ),
             });
         } else if !bare && current.as_deref() == Some(name.as_str()) {
             match sys.git(path, &["merge", "--ff-only", "--", &upstream_ref]) {
                 Ok(output) if output.status.success() => {
-                    push_updated(steps, &branches, &mut shas, index, &upstream_sha);
+                    push_updated(
+                        &mut slots[index],
+                        &branches,
+                        &mut shas,
+                        index,
+                        &upstream_sha,
+                    );
                 }
                 Ok(output) => {
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -296,20 +327,28 @@ fn branch_step(
                     } else {
                         "merge failed"
                     };
-                    steps.push(Step::Branch {
+                    slots[index] = Some(Step::Branch {
                         name,
                         outcome: BranchOutcome::Skipped(reason.to_owned()),
                     });
                 }
-                Err(err) => steps.push(Step::Branch {
-                    name,
-                    outcome: BranchOutcome::Skipped(format!("Could not run git: {err}")),
-                }),
+                Err(err) => {
+                    slots[index] = Some(Step::Branch {
+                        name,
+                        outcome: BranchOutcome::Skipped(format!("Could not run git: {err}")),
+                    })
+                }
             }
         } else {
             match sys.git(path, &["branch", "-f", "--", &name, &upstream_ref]) {
                 Ok(output) if output.status.success() => {
-                    push_updated(steps, &branches, &mut shas, index, &upstream_sha);
+                    push_updated(
+                        &mut slots[index],
+                        &branches,
+                        &mut shas,
+                        index,
+                        &upstream_sha,
+                    );
                 }
                 Ok(output) => {
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -319,35 +358,65 @@ fn branch_step(
                         .unwrap_or_else(|| {
                             format!("git branch -f {name} failed with {}.", output.status)
                         });
-                    steps.push(Step::Branch {
+                    slots[index] = Some(Step::Branch {
                         name,
                         outcome: BranchOutcome::Error(line),
                     });
                 }
-                Err(err) => steps.push(Step::Branch {
-                    name,
-                    outcome: BranchOutcome::Error(format!("Could not run git: {err}")),
-                }),
+                Err(err) => {
+                    slots[index] = Some(Step::Branch {
+                        name,
+                        outcome: BranchOutcome::Error(format!("Could not run git: {err}")),
+                    })
+                }
             }
         }
     }
+    steps.extend(slots.into_iter().flatten());
 }
 
-/// Record a moved branch and update the snapshot, so later branches tracking it see the new SHA.
+/// The order to process branches in: a branch comes after any local branch it
+/// tracks, so the follower sees the tracked branch's move. Name order breaks
+/// ties, and a cycle takes the next remaining name-first branch.
+fn processing_order(branches: &[Branch]) -> Vec<usize> {
+    let deps: Vec<Option<usize>> = branches
+        .iter()
+        .enumerate()
+        .map(|(index, branch)| {
+            let tracked = branch.upstream.strip_prefix("refs/heads/")?;
+            branches
+                .iter()
+                .position(|other| other.name == tracked)
+                .filter(|&other| other != index)
+        })
+        .collect();
+    let mut done = vec![false; branches.len()];
+    let mut order = Vec::with_capacity(branches.len());
+    while let Some(next) = (0..branches.len())
+        .find(|&i| !done[i] && deps[i].is_none_or(|dep| done[dep]))
+        .or_else(|| (0..branches.len()).find(|&i| !done[i]))
+    {
+        done[next] = true;
+        order.push(next);
+    }
+    order
+}
+
+/// Record a moved branch in its slot and update the snapshot, so branches
+/// processed after it that track it see the new SHA.
 fn push_updated(
-    steps: &mut Vec<Step>,
+    slot: &mut Option<Step>,
     branches: &[Branch],
     shas: &mut [(String, String)],
     index: usize,
     upstream_sha: &str,
 ) {
     let branch = &branches[index];
-    // A later branch may track this one: its snapshot SHA moves too.
     let reference = format!("refs/heads/{}", branch.name);
     if let Some((_, sha)) = shas.iter_mut().find(|(r, _)| *r == reference) {
         *sha = upstream_sha.to_owned();
     }
-    steps.push(Step::Branch {
+    *slot = Some(Step::Branch {
         name: branch.name.clone(),
         outcome: BranchOutcome::Updated {
             from: branch.sha.clone(),

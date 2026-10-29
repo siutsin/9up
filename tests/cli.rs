@@ -15,6 +15,13 @@ fn nine_up(dir: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
+/// Run the binary where the test expects success, so the exit status is asserted.
+fn nine_up_ok(dir: &Path, args: &[&str]) -> Output {
+    let out = nine_up(dir, args);
+    assert!(out.status.success(), "{out:?}");
+    out
+}
+
 /// Run the binary with extra environment variables, for `HOME` and `XDG_CONFIG_HOME` tests.
 fn nine_up_env(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_9up"));
@@ -73,8 +80,7 @@ fn add_list_and_delete_round_trip() {
     let repo = fs::canonicalize(dir.path()).unwrap().join("repo");
     let repo = repo.display().to_string();
 
-    let added = nine_up(dir.path(), &["-C", b, "add", "repo"]);
-    assert!(added.status.success());
+    let added = nine_up_ok(dir.path(), &["-C", b, "add", "repo"]);
     assert!(stdout(&added).contains("Added"));
     assert!(stdout(&added).contains(&repo));
     // A new file is the one key, with each entry on its own line.
@@ -83,19 +89,19 @@ fn add_list_and_delete_round_trip() {
         format!("repositories = [\n    \"{repo}\"\n]\n")
     );
 
-    let again = nine_up(dir.path(), &["-C", b, "add", "repo"]);
+    let again = nine_up_ok(dir.path(), &["-C", b, "add", "repo"]);
     assert!(stdout(&again).contains("already in the config file"));
 
-    let listed = nine_up(dir.path(), &["--config", b, "list"]);
+    let listed = nine_up_ok(dir.path(), &["--config", b, "list"]);
     assert!(stdout(&listed).contains(&repo));
 
-    let deleted = nine_up(dir.path(), &["-C", b, "delete", "repo"]);
+    let deleted = nine_up_ok(dir.path(), &["-C", b, "delete", "repo"]);
     assert!(stdout(&deleted).contains("Deleted"));
 
-    let missing = nine_up(dir.path(), &["-C", b, "delete", "repo"]);
+    let missing = nine_up_ok(dir.path(), &["-C", b, "delete", "repo"]);
     assert!(stdout(&missing).contains("not in the config file"));
 
-    let empty = nine_up(dir.path(), &["-C", b, "list"]);
+    let empty = nine_up_ok(dir.path(), &["-C", b, "list"]);
     assert!(stdout(&empty).contains("No repositories configured."));
     assert_eq!(fs::read_to_string(&file).unwrap(), "repositories = []\n");
 }
@@ -137,14 +143,14 @@ fn discovery_prints_headers_and_names() {
     make_repo(&base.join("a/repo"));
     make_repo(&dir.path().join("solo"));
 
-    let listed = nine_up(dir.path(), &["update", base.to_str().unwrap()]);
+    let listed = nine_up_ok(dir.path(), &["update", base.to_str().unwrap()]);
     assert!(stdout(&listed).contains("(1 repository)"));
     assert!(stdout(&listed).contains("a/repo"));
 
-    let solo = nine_up(dir.path(), &[dir.path().join("solo").to_str().unwrap()]);
+    let solo = nine_up_ok(dir.path(), &[dir.path().join("solo").to_str().unwrap()]);
     assert!(stdout(&solo).contains("\n  solo"), "{}", stdout(&solo));
 
-    let empty = nine_up(
+    let empty = nine_up_ok(
         dir.path(),
         &["update", dir.path().join("nope").to_str().unwrap()],
     );
@@ -166,13 +172,13 @@ fn bare_run_uses_the_configured_paths_and_clean_prunes_them() {
     )
     .unwrap();
 
-    let bare = nine_up(dir.path(), &["-C", b]);
+    let bare = nine_up_ok(dir.path(), &["-C", b]);
     assert!(stdout(&bare).contains("kept"));
     assert!(stdout(&bare).contains("doesn't exist"));
     assert!(stdout(&bare).contains("note"));
 
     // Clean removes /gone but never a comment entry.
-    let cleaned = nine_up(dir.path(), &["-C", b, "clean"]);
+    let cleaned = nine_up_ok(dir.path(), &["-C", b, "clean"]);
     assert!(stdout(&cleaned).contains("Removed /gone."));
     assert!(!stdout(&cleaned).contains("Removed # note."));
     assert_eq!(
@@ -183,11 +189,11 @@ fn bare_run_uses_the_configured_paths_and_clean_prunes_them() {
         )
     );
 
-    let listed = nine_up(dir.path(), &["-C", b, "list"]);
+    let listed = nine_up_ok(dir.path(), &["-C", b, "list"]);
     assert!(stdout(&listed).contains(&dir.path().join("kept").display().to_string()));
     assert!(stdout(&listed).contains("# note"));
 
-    let again = nine_up(dir.path(), &["-C", b, "clean"]);
+    let again = nine_up_ok(dir.path(), &["-C", b, "clean"]);
     assert!(stdout(&again).contains("Nothing to clean."));
 }
 
@@ -195,7 +201,7 @@ fn bare_run_uses_the_configured_paths_and_clean_prunes_them() {
 #[test]
 fn no_configured_paths_prints_the_hint() {
     let (dir, file, _) = temp_config();
-    let out = nine_up(dir.path(), &["-C", file.to_str().unwrap()]);
+    let out = nine_up_ok(dir.path(), &["-C", file.to_str().unwrap()]);
     assert!(stdout(&out).contains("No repositories configured."));
 }
 
@@ -214,13 +220,13 @@ fn update_reports_what_a_fetch_brought_in() {
     git(&work, &["tag", "v1"]);
     git(&work, &["push", "-q", "origin", "v1"]);
 
-    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let out = nine_up_ok(dir.path(), &["update", stale.to_str().unwrap()]);
     let text = stdout(&out);
     assert!(text.contains("new branches: feat"), "{text}");
     assert!(text.contains("new tags: v1"), "{text}");
     assert!(text.contains("updated references: main"), "{text}");
 
-    let again = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let again = nine_up_ok(dir.path(), &["update", stale.to_str().unwrap()]);
     assert!(stdout(&again).contains("origin is up to date."));
 }
 
@@ -242,7 +248,7 @@ fn two_remotes_both_fetch_and_a_refspec_less_remote_is_skipped() {
     commit_file(&work, "b");
     git(&work, &["push", "-q", "origin", "main"]);
 
-    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let out = nine_up_ok(dir.path(), &["update", stale.to_str().unwrap()]);
     let text = stdout(&out);
     assert!(
         text.contains("Fetched origin: updated references: main."),
@@ -272,7 +278,7 @@ fn a_failed_fetch_stops_the_remaining_remotes() {
         &["remote", "set-url", "origin", "/nonexistent-9up/remote.git"],
     );
 
-    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let out = nine_up_ok(dir.path(), &["update", stale.to_str().unwrap()]);
     let text = stdout(&out);
     assert!(text.contains("fatal:"), "{text}");
     assert!(!text.contains("Fetched upstream"), "{text}");
@@ -325,7 +331,7 @@ fn branch_step_fast_forwards_and_skips() {
     commit_file(&work, "d2");
     git(&work, &["push", "-q", "origin", "diverged"]);
 
-    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let out = nine_up_ok(dir.path(), &["update", stale.to_str().unwrap()]);
     let text = stdout(&out);
     assert!(text.contains("main updated:"), "{text}");
     assert!(text.contains("side updated:"), "{text}");
@@ -338,7 +344,7 @@ fn branch_step_fast_forwards_and_skips() {
     assert_eq!(sha(&stale, "side"), sha(&stale, "origin/side"));
     assert_eq!(sha(&stale, "diverged"), diverged_before);
 
-    let again = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let again = nine_up_ok(dir.path(), &["update", stale.to_str().unwrap()]);
     assert!(stdout(&again).contains("main is up to date."));
 }
 
@@ -351,7 +357,7 @@ fn fetch_only_and_uncommitted_changes() {
     git(&work, &["push", "-q", "origin", "main"]);
     let behind = sha(&stale, "main");
 
-    let fetched = nine_up(dir.path(), &["update", "-f", stale.to_str().unwrap()]);
+    let fetched = nine_up_ok(dir.path(), &["update", "-f", stale.to_str().unwrap()]);
     assert!(
         !stdout(&fetched).contains("main updated:"),
         "{}",
@@ -365,7 +371,7 @@ fn fetch_only_and_uncommitted_changes() {
     git(&work, &["commit", "-qm", "change a"]);
     git(&work, &["push", "-q", "origin", "main"]);
     fs::write(stale.join("a"), "dirty locally").unwrap();
-    let blocked = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let blocked = nine_up_ok(dir.path(), &["update", stale.to_str().unwrap()]);
     let text = stdout(&blocked);
     assert!(
         text.contains("main skipped: uncommitted changes."),
@@ -396,7 +402,7 @@ fn a_bare_repository_updates_its_head_branch() {
     commit_file(&work, "b");
     git(&work, &["push", "-q", "origin", "main"]);
 
-    let out = nine_up(dir.path(), &["update", bare.to_str().unwrap()]);
+    let out = nine_up_ok(dir.path(), &["update", bare.to_str().unwrap()]);
     let text = stdout(&out);
     assert!(text.contains("main updated:"), "{text}");
     assert_eq!(sha(&bare, "main"), sha(&bare, "refs/remotes/origin/main"));
@@ -415,7 +421,7 @@ fn a_branch_tracking_a_local_branch_sees_its_move() {
     commit_file(&work, "b");
     git(&work, &["push", "-q", "origin", "main"]);
 
-    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let out = nine_up_ok(dir.path(), &["update", stale.to_str().unwrap()]);
     let text = stdout(&out);
     assert!(text.contains("a-main updated:"), "{text}");
     assert!(text.contains("b-follow updated:"), "{text}");
@@ -446,7 +452,7 @@ fn exec_runs_in_each_repository_and_ignores_the_exit_status() {
     let stderr_at = text.find("to-stderr").unwrap();
     assert!(stdout_at < stderr_at, "{text}");
 
-    let missing = nine_up(
+    let missing = nine_up_ok(
         dir.path(),
         &["exec", repo.to_str().unwrap(), "--", "/nonexistent-9up/cmd"],
     );
@@ -473,7 +479,7 @@ fn exec_with_no_command_is_a_usage_error_and_touches_nothing() {
 fn exec_with_no_configured_paths_prints_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("config.toml");
-    let out = nine_up(
+    let out = nine_up_ok(
         dir.path(),
         &["-C", file.to_str().unwrap(), "exec", "--", "true"],
     );
@@ -489,6 +495,21 @@ fn depth_uses_the_short_flag_t() {
     let out = nine_up(dir.path(), &["update", "-t", "-1", repo.to_str().unwrap()]);
     assert!(out.status.success(), "{out:?}");
     assert!(stdout(&out).contains("repo (1 repository)"));
+}
+
+/// Guards `update -t 0` on a plain directory: it is a path error, and a path error is a
+/// normal run outcome, so the run still succeeds.
+#[test]
+fn update_at_depth_zero_on_a_plain_directory_is_not_a_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("plain");
+    fs::create_dir_all(&plain).unwrap();
+    let out = nine_up_ok(dir.path(), &["update", "-t", "0", plain.to_str().unwrap()]);
+    assert!(
+        stdout(&out).contains("isn't a repository"),
+        "{}",
+        stdout(&out)
+    );
 }
 
 /// Check that a reference exists, so tests can prove a prune removed it.
@@ -574,7 +595,7 @@ fn current_only_fetches_only_the_tracked_remote() {
     git(&work, &["push", "-q", "other", "main"]);
     let _ = remote;
 
-    let out = nine_up(dir.path(), &["update", "-c", stale.to_str().unwrap()]);
+    let out = nine_up_ok(dir.path(), &["update", "-c", stale.to_str().unwrap()]);
     let text = stdout(&out);
     assert!(text.contains("Fetched origin"), "{text}");
     assert!(!text.contains("upstream"), "{text}");
@@ -611,7 +632,7 @@ fn current_only_still_updates_a_non_current_branch() {
     git(&work, &["push", "-q", "origin", "side"]);
     git(&work, &["checkout", "-q", "main"]);
 
-    let out = nine_up(dir.path(), &["update", "-c", stale.to_str().unwrap()]);
+    let out = nine_up_ok(dir.path(), &["update", "-c", stale.to_str().unwrap()]);
     let text = stdout(&out);
     assert!(text.contains("side updated:"), "{text}");
     assert_eq!(sha(&stale, "side"), sha(&work, "side"));
@@ -624,7 +645,7 @@ fn current_only_with_a_detached_head_is_an_error() {
     let (_remote, _work, stale) = remote_work_stale(dir.path());
     let head = sha(&stale, "HEAD");
     git(&stale, &["checkout", "-q", &head]);
-    let out = nine_up(dir.path(), &["update", "-c", stale.to_str().unwrap()]);
+    let out = nine_up_ok(dir.path(), &["update", "-c", stale.to_str().unwrap()]);
     assert!(
         stdout(&out).contains("HEAD is detached, so no remote is tracked."),
         "{}",
@@ -641,7 +662,7 @@ fn a_detached_head_update_still_updates_branches() {
     git(&stale, &["checkout", "-q", &head]);
     commit_file(&work, "b");
     git(&work, &["push", "-q", "origin", "main"]);
-    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let out = nine_up_ok(dir.path(), &["update", stale.to_str().unwrap()]);
     let text = stdout(&out);
     assert!(text.contains("main updated:"), "{text}");
     assert_eq!(sha(&stale, "main"), sha(&stale, "refs/remotes/origin/main"));
@@ -656,7 +677,7 @@ fn prune_removes_a_branch_deleted_on_the_remote() {
     commit_file(&work, "f");
     git(&work, &["push", "-q", "origin", "feat"]);
     git(&work, &["checkout", "-q", "main"]);
-    let first = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let first = nine_up_ok(dir.path(), &["update", stale.to_str().unwrap()]);
     assert!(stdout(&first).contains("feat"), "{}", stdout(&first));
     assert!(ref_exists(&stale, "refs/remotes/origin/feat"));
 
@@ -708,7 +729,7 @@ fn dash_leading_branch_and_remote_are_protected_by_separators() {
         &["push", "-q", "origin", "refs/heads/-x:refs/heads/-x"],
     );
 
-    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let out = nine_up_ok(dir.path(), &["update", stale.to_str().unwrap()]);
     let text = stdout(&out);
     // Without `--` in `git fetch ... -- -x`, git sees an unknown switch and the ref does not move.
     assert_eq!(sha(&stale, "refs/remotes/-x/main"), sha(&work, "main"));
@@ -729,7 +750,7 @@ fn exec_depth_limits_the_search() {
     make_repo(&base.join("one"));
     make_repo(&base.join("a/two"));
 
-    let shallow = nine_up(
+    let shallow = nine_up_ok(
         dir.path(),
         &["exec", "-t", "1", base.to_str().unwrap(), "--", "true"],
     );
@@ -738,7 +759,7 @@ fn exec_depth_limits_the_search() {
     assert!(text.contains("one"), "{text}");
     assert!(!text.contains("a/two"), "{text}");
 
-    let deep = nine_up(
+    let deep = nine_up_ok(
         dir.path(),
         &["exec", "--depth", "2", base.to_str().unwrap(), "--", "true"],
     );
@@ -763,6 +784,7 @@ fn default_config_path_follows_xdg_config_home_only_when_absolute() {
             &["list"],
             &[("HOME", home), ("XDG_CONFIG_HOME", xdg)],
         );
+        assert!(out.status.success());
         assert!(
             stdout(&out).contains("/from-default"),
             "XDG_CONFIG_HOME={xdg:?}: {}",
@@ -781,6 +803,7 @@ fn default_config_path_follows_xdg_config_home_only_when_absolute() {
             &["-C", "", "list"],
             &[("HOME", home), ("XDG_CONFIG_HOME", xdg)],
         );
+        assert!(out.status.success());
         assert!(
             stdout(&out).contains("/from-default"),
             "XDG_CONFIG_HOME={xdg:?}: {}",
@@ -800,6 +823,7 @@ fn default_config_path_follows_xdg_config_home_only_when_absolute() {
         &["list"],
         &[("HOME", home), ("XDG_CONFIG_HOME", xdg.to_str().unwrap())],
     );
+    assert!(out.status.success());
     assert!(stdout(&out).contains("/from-xdg"), "{}", stdout(&out));
 }
 
@@ -814,16 +838,14 @@ fn a_toml_comment_and_an_unknown_key_survive_add_and_delete() {
     )
     .unwrap();
 
-    let added = nine_up(dir.path(), &["-C", b, "add", "repo"]);
-    assert!(added.status.success(), "{}", stdout(&added));
-    let deleted = nine_up(dir.path(), &["-C", b, "delete", "repo"]);
-    assert!(deleted.status.success(), "{}", stdout(&deleted));
+    nine_up_ok(dir.path(), &["-C", b, "add", "repo"]);
+    nine_up_ok(dir.path(), &["-C", b, "delete", "repo"]);
 
     let text = fs::read_to_string(&file).unwrap();
     assert!(text.contains("# my note"), "{text}");
     assert!(text.contains("# first"), "{text}");
     assert!(text.contains("other = 1"), "{text}");
-    let listed = nine_up(dir.path(), &["-C", b, "list"]);
+    let listed = nine_up_ok(dir.path(), &["-C", b, "list"]);
     assert_eq!(stdout(&listed), "9up\n\n/a\n");
 }
 
@@ -834,10 +856,10 @@ fn delete_removes_only_the_first_match() {
     let b = text.as_str();
     fs::write(&file, "repositories = [\"/a\", \"/b\", \"/a\"]\n").unwrap();
 
-    let deleted = nine_up(dir.path(), &["-C", b, "delete", "/a"]);
+    let deleted = nine_up_ok(dir.path(), &["-C", b, "delete", "/a"]);
     assert!(stdout(&deleted).contains("Deleted /a."));
 
-    let listed = nine_up(dir.path(), &["-C", b, "list"]);
+    let listed = nine_up_ok(dir.path(), &["-C", b, "list"]);
     assert_eq!(stdout(&listed), "9up\n\n/b\n/a\n");
 }
 
@@ -853,11 +875,11 @@ fn a_no_op_delete_and_clean_leave_the_file_unchanged() {
     );
     fs::write(&file, &text).unwrap();
 
-    let missing = nine_up(dir.path(), &["-C", b, "delete", "/missing"]);
+    let missing = nine_up_ok(dir.path(), &["-C", b, "delete", "/missing"]);
     assert!(stdout(&missing).contains("not in the config file"));
     assert_eq!(fs::read_to_string(&file).unwrap(), text);
 
-    let cleaned = nine_up(dir.path(), &["-C", b, "clean"]);
+    let cleaned = nine_up_ok(dir.path(), &["-C", b, "clean"]);
     assert!(stdout(&cleaned).contains("Nothing to clean."));
     assert_eq!(fs::read_to_string(&file).unwrap(), text);
 }
@@ -883,13 +905,29 @@ fn an_unparseable_config_fails_with_exit_1() {
     assert!(!out.stderr.is_empty());
 }
 
+/// Guards a failed save: the error must name the config file, and no success message
+/// may print before the save has happened.
+#[test]
+fn a_failed_save_names_the_config_file_and_prints_no_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    fs::create_dir(&config).unwrap();
+    let out = nine_up(dir.path(), &["-C", config.to_str().unwrap(), "add", "repo"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains(&config.display().to_string()),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!stdout(&out).contains("Added"), "{}", stdout(&out));
+}
+
 /// Guards a config without `repositories`; it means an empty list, not an error.
 #[test]
 fn a_missing_repositories_key_means_no_repositories() {
     let (dir, file, _) = temp_config();
     fs::write(&file, "other = 1\n").unwrap();
-    let out = nine_up(dir.path(), &["-C", file.to_str().unwrap(), "list"]);
-    assert!(out.status.success());
+    let out = nine_up_ok(dir.path(), &["-C", file.to_str().unwrap(), "list"]);
     assert!(stdout(&out).contains("No repositories configured."));
 }
 
@@ -925,7 +963,7 @@ fn a_branch_with_a_missing_upstream_reference_is_silent() {
         &["config", "branch.ghost.merge", "refs/heads/ghost"],
     );
     git(&stale, &["checkout", "-q", "main"]);
-    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let out = nine_up_ok(dir.path(), &["update", stale.to_str().unwrap()]);
     let text = stdout(&out);
     assert!(!text.contains("ghost"), "{text}");
 }
@@ -940,7 +978,7 @@ fn a_branch_with_no_merge_base_with_its_upstream_is_silent() {
     git(&stale, &["config", "branch.alien.remote", "origin"]);
     git(&stale, &["config", "branch.alien.merge", "refs/heads/main"]);
     git(&stale, &["checkout", "-q", "main"]);
-    let out = nine_up(dir.path(), &["update", stale.to_str().unwrap()]);
+    let out = nine_up_ok(dir.path(), &["update", stale.to_str().unwrap()]);
     let text = stdout(&out);
     assert!(!text.contains("alien"), "{text}");
 }
@@ -954,7 +992,7 @@ fn exec_in_a_bare_repository_runs_in_the_repository_directory() {
         dir.path(),
         &["init", "-q", "-b", "main", "--bare", bare.to_str().unwrap()],
     );
-    let out = nine_up(
+    let out = nine_up_ok(
         dir.path(),
         &["exec", bare.to_str().unwrap(), "--", "sh", "-c", "pwd"],
     );
@@ -972,8 +1010,7 @@ fn exec_in_a_bare_repository_runs_in_the_repository_directory() {
 fn clean_with_no_configured_repositories_says_so() {
     let (dir, _file, text) = temp_config();
     let b = text.as_str();
-    let out = nine_up(dir.path(), &["-C", b, "clean"]);
-    assert!(out.status.success());
+    let out = nine_up_ok(dir.path(), &["-C", b, "clean"]);
     assert!(stdout(&out).contains("No repositories configured."));
 }
 
@@ -1022,11 +1059,9 @@ fn update_fails_from_a_deleted_current_directory() {
 #[test]
 fn a_relative_config_path_round_trips() {
     let dir = tempfile::tempdir().unwrap();
-    let added = nine_up(dir.path(), &["-C", "cfg.toml", "add", "repo"]);
-    assert!(added.status.success(), "{}", stdout(&added));
+    nine_up_ok(dir.path(), &["-C", "cfg.toml", "add", "repo"]);
     assert!(dir.path().join("cfg.toml").exists());
-    let listed = nine_up(dir.path(), &["-C", "cfg.toml", "list"]);
-    assert!(listed.status.success());
+    let listed = nine_up_ok(dir.path(), &["-C", "cfg.toml", "list"]);
     assert!(stdout(&listed).contains("repo"), "{}", stdout(&listed));
 }
 
@@ -1099,4 +1134,26 @@ fn a_closed_stdout_still_exits_successfully() {
         .status()
         .unwrap();
     assert!(status.success());
+}
+
+/// Guards an output error that is not a broken pipe: every write to a full device
+/// fails, so `main` must report the error and exit 1, not succeed quietly.
+#[cfg(unix)]
+#[test]
+fn an_output_error_that_is_not_a_broken_pipe_fails_the_run() {
+    let (dir, file, text) = temp_config();
+    fs::write(&file, "repositories = [\"/srv/repos\"]\n").unwrap();
+    let full = fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_9up"))
+        .args(["-C", text.as_str(), "list"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .stdout(full)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("9up:"), "{}", stderr(&out));
 }

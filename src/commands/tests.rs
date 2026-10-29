@@ -5,9 +5,11 @@ use std::path::Path;
 
 use crate::render::tests::FailingWriter;
 
-/// A system that serves one in-memory config file and answers every git call with empty success.
+/// A system that serves one in-memory config file and answers every git call with empty
+/// success. Its write can be set to fail, so a command's save can be made to fail.
 struct MemorySys {
     config: Vec<u8>,
+    write_fails: bool,
 }
 
 impl crate::sys::Sys for MemorySys {
@@ -25,15 +27,26 @@ impl crate::sys::Sys for MemorySys {
         Ok(self.config.clone())
     }
 
-    /// Accept the write, so a save through the seam succeeds in happy-path tests.
+    /// Accept the write unless the test set `write_fails`, so a save fails there instead.
     fn write(&self, _path: &Path, _contents: &[u8]) -> io::Result<()> {
-        Ok(())
+        if self.write_fails {
+            Err(io::Error::other("write refused"))
+        } else {
+            Ok(())
+        }
     }
 }
 
 /// Build an `App` around `MemorySys`, so a test needs only a config and a writer.
 fn test_app<'a>(config: Vec<u8>, cwd: &Path, out: &'a mut (dyn Write + 'a)) -> App<'a> {
-    app_with(Box::new(MemorySys { config }), cwd, out)
+    app_with(
+        Box::new(MemorySys {
+            config,
+            write_fails: false,
+        }),
+        cwd,
+        out,
+    )
 }
 
 /// Create a fake repository under `dir` and return the config bytes that name it.
@@ -55,13 +68,67 @@ fn update_with_no_configured_repositories_prints_the_hint() {
     assert!(text.contains("No repositories configured."), "{text}");
 }
 
-/// Guards that a failed hint write is an error, so `main` can decide the exit code.
+/// Guards that every command returns its output write error, so `main` can decide the
+/// exit code. Each row is one command meeting a failing writer at one of its writes.
 #[test]
-fn update_reports_a_failed_hint_write() {
+fn commands_report_a_failed_write() {
     let dir = tempfile::tempdir().unwrap();
-    let mut out = FailingWriter;
-    let mut app = test_app(Vec::new(), dir.path(), &mut out);
-    assert!(update(&mut app, &UpdateArgs::default()).is_err());
+    let repo = repo_config(dir.path());
+    let kept = dir.path().join("kept");
+    fs::create_dir_all(&kept).unwrap();
+    let kept_config = format!("repositories = [\"{}\"]\n", kept.display()).into_bytes();
+    let missing: Vec<u8> = b"repositories = [\"/nonexistent-9up-test\"]\n".to_vec();
+    let stored: Vec<u8> = b"repositories = [\"/x\"]\n".to_vec();
+    let empty: Vec<u8> = b"repositories = []\n".to_vec();
+    type Call = fn(&mut App<'_>) -> io::Result<ExitCode>;
+    let cases: Vec<(&str, Vec<u8>, Call)> = vec![
+        ("update hint", Vec::new(), |app| {
+            update(app, &UpdateArgs::default())
+        }),
+        ("update header", repo.clone(), |app| {
+            update(app, &UpdateArgs::default())
+        }),
+        ("exec missing path", missing.clone(), |app| {
+            exec(app, &[], 3, &["true".to_owned()])
+        }),
+        (
+            "exec comment",
+            b"repositories = [\"# note\"]\n".to_vec(),
+            |app| exec(app, &[], 3, &["true".to_owned()]),
+        ),
+        ("exec header", repo, |app| {
+            exec(app, &[], 3, &["true".to_owned()])
+        }),
+        ("add", empty.clone(), |app| add(app, &["/x".to_owned()])),
+        ("add stored", stored.clone(), |app| {
+            add(app, &["/x".to_owned()])
+        }),
+        ("delete", stored.clone(), |app| {
+            delete(app, &["/x".to_owned()])
+        }),
+        ("delete missing", empty.clone(), |app| {
+            delete(app, &["/x".to_owned()])
+        }),
+        ("list", stored.clone(), |app| list(app)),
+        ("list empty", empty, |app| list(app)),
+        ("clean removal", missing.clone(), |app| clean(app)),
+        ("clean empty", b"repositories = []\n".to_vec(), |app| {
+            clean(app)
+        }),
+        ("clean nothing", kept_config, |app| clean(app)),
+    ];
+    for (name, config, call) in cases {
+        let mut out = FailingWriter;
+        let mut app = app_with(
+            Box::new(MemorySys {
+                config,
+                write_fails: false,
+            }),
+            dir.path(),
+            &mut out,
+        );
+        assert!(call(&mut app).is_err(), "{name}");
+    }
 }
 
 /// Guards the whole `update` path from config to output through the `App`.
@@ -75,16 +142,6 @@ fn update_a_repository_through_the_app() {
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("(1 repository)"), "{text}");
     assert!(text.contains("No remotes."), "{text}");
-}
-
-/// Guards that a failed header write stops `update` with an error.
-#[test]
-fn update_reports_a_failed_header_write() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = repo_config(dir.path());
-    let mut out = FailingWriter;
-    let mut app = test_app(config, dir.path(), &mut out);
-    assert!(update(&mut app, &UpdateArgs::default()).is_err());
 }
 
 #[test]
@@ -108,16 +165,6 @@ fn exec_prints_nothing_for_an_empty_comment() {
     let mut app = test_app(config, dir.path(), &mut out);
     assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_ok());
     assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
-}
-
-/// Guards that a failed write in `exec` is an error; a closed pipe stops the run.
-#[test]
-fn exec_reports_a_failed_write() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = b"repositories = [\"/nonexistent-9up-test\"]\n".to_vec();
-    let mut out = FailingWriter;
-    let mut app = test_app(config, dir.path(), &mut out);
-    assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_err());
 }
 
 /// Guards that `update` prints comment entries and missing paths beside real repositories.
@@ -216,59 +263,6 @@ fn exec_reports_an_unparseable_config() {
     assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_err());
 }
 
-/// Guards that `add` returns its write error, so `main` can decide the exit code.
-#[test]
-fn add_reports_a_failed_write() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut out = FailingWriter;
-    let mut app = test_app(b"repositories = []\n".to_vec(), dir.path(), &mut out);
-    assert!(add(&mut app, &["/x".to_owned()]).is_err());
-}
-
-/// Guards that `delete` returns its write error, so `main` can decide the exit code.
-#[test]
-fn delete_reports_a_failed_write() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut out = FailingWriter;
-    let mut app = test_app(b"repositories = [\"/x\"]\n".to_vec(), dir.path(), &mut out);
-    assert!(delete(&mut app, &["/x".to_owned()]).is_err());
-}
-
-/// Guards that `list` returns its write error, so `main` can decide the exit code.
-#[test]
-fn list_reports_a_failed_write() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut out = FailingWriter;
-    let mut app = test_app(b"repositories = [\"/x\"]\n".to_vec(), dir.path(), &mut out);
-    assert!(list(&mut app).is_err());
-}
-
-/// Guards that `clean` returns its write error, so `main` can decide the exit code.
-#[test]
-fn clean_reports_a_failed_write() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = b"repositories = [\"/nonexistent-9up-test\"]\n".to_vec();
-    let mut out = FailingWriter;
-    let mut app = test_app(config, dir.path(), &mut out);
-    assert!(clean(&mut app).is_err());
-}
-
-/// A system that serves one in-memory config file but refuses every write, so a command
-/// reaches its save and fails there, after its own output already succeeded.
-struct SaveFailSys {
-    config: Vec<u8>,
-}
-
-impl crate::sys::Sys for SaveFailSys {
-    fn read(&self, _path: &Path) -> io::Result<Vec<u8>> {
-        Ok(self.config.clone())
-    }
-
-    fn write(&self, _path: &Path, _contents: &[u8]) -> io::Result<()> {
-        Err(io::Error::other("write refused"))
-    }
-}
-
 /// A system that fails every call, so `exec_repo` can only report an unreadable repository.
 struct FailingSys;
 
@@ -334,15 +328,6 @@ fn add_reports_a_path_that_is_already_stored() {
     assert!(text.contains("already in the config file."), "{text}");
 }
 
-/// Guards that a failed write of the already-stored line is an error.
-#[test]
-fn add_reports_a_failed_write_for_a_stored_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut out = FailingWriter;
-    let mut app = test_app(b"repositories = [\"/x\"]\n".to_vec(), dir.path(), &mut out);
-    assert!(add(&mut app, &["/x".to_owned()]).is_err());
-}
-
 /// Guards that `add` fails on a broken config rather than starting from nothing.
 #[test]
 fn add_reports_an_unparseable_config() {
@@ -352,18 +337,21 @@ fn add_reports_an_unparseable_config() {
     assert!(add(&mut app, &["/x".to_owned()]).is_err());
 }
 
-/// Guards that `add` returns its save error, so `main` can decide the exit code.
+/// Guards that `add` saves before it reports: a failed save errors, names the config
+/// file, and prints no success line.
 #[test]
 fn add_reports_a_failed_save() {
     let dir = tempfile::tempdir().unwrap();
     let mut out: Vec<u8> = Vec::new();
-    let sys = SaveFailSys {
+    let sys = MemorySys {
         config: b"repositories = []\n".to_vec(),
+        write_fails: true,
     };
     let mut app = app_with(Box::new(sys), dir.path(), &mut out);
-    assert!(add(&mut app, &["/x".to_owned()]).is_err());
+    let err = add(&mut app, &["/x".to_owned()]).unwrap_err();
+    assert!(err.to_string().contains("config.toml"), "{err}");
     let text = String::from_utf8(out).unwrap();
-    assert!(text.contains("Added /x."), "{text}");
+    assert!(!text.contains("Added /x."), "{text}");
 }
 
 /// Guards that `delete` reports a path that was never stored and changes nothing.
@@ -388,25 +376,21 @@ fn delete_removes_a_stored_path() {
     assert!(text.contains("Deleted /x."), "{text}");
 }
 
-/// Guards that a failed write of the not-stored line is an error.
-#[test]
-fn delete_reports_a_failed_write_for_a_missing_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut out = FailingWriter;
-    let mut app = test_app(b"repositories = []\n".to_vec(), dir.path(), &mut out);
-    assert!(delete(&mut app, &["/x".to_owned()]).is_err());
-}
-
-/// Guards that `delete` returns its save error, so `main` can decide the exit code.
+/// Guards that `delete` saves before it reports: a failed save errors, names the config
+/// file, and prints no success line.
 #[test]
 fn delete_reports_a_failed_save() {
     let dir = tempfile::tempdir().unwrap();
     let mut out: Vec<u8> = Vec::new();
-    let sys = SaveFailSys {
+    let sys = MemorySys {
         config: b"repositories = [\"/x\"]\n".to_vec(),
+        write_fails: true,
     };
     let mut app = app_with(Box::new(sys), dir.path(), &mut out);
-    assert!(delete(&mut app, &["/x".to_owned()]).is_err());
+    let err = delete(&mut app, &["/x".to_owned()]).unwrap_err();
+    assert!(err.to_string().contains("config.toml"), "{err}");
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.contains("Deleted /x."), "{text}");
 }
 
 /// Guards that `delete` fails on a broken config rather than guessing at its entries.
@@ -427,15 +411,6 @@ fn list_prints_the_empty_message() {
     assert!(list(&mut app).is_ok());
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("No repositories configured."), "{text}");
-}
-
-/// Guards that a failed write of the empty message is an error.
-#[test]
-fn list_reports_a_failed_empty_message_write() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut out = FailingWriter;
-    let mut app = test_app(b"repositories = []\n".to_vec(), dir.path(), &mut out);
-    assert!(list(&mut app).is_err());
 }
 
 /// Guards that `list` fails on a broken config rather than printing nothing.
@@ -465,15 +440,6 @@ fn clean_prints_the_empty_message() {
     assert!(clean(&mut app).is_ok());
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("No repositories configured."), "{text}");
-}
-
-/// Guards that a failed write of `clean`'s empty message is an error.
-#[test]
-fn clean_reports_a_failed_empty_message_write() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut out = FailingWriter;
-    let mut app = test_app(b"repositories = []\n".to_vec(), dir.path(), &mut out);
-    assert!(clean(&mut app).is_err());
 }
 
 /// Guards that `clean` fails on a broken config rather than pruning blind.
@@ -514,30 +480,21 @@ fn clean_keeps_a_live_entry() {
     assert!(text.contains("Nothing to clean."), "{text}");
 }
 
-/// Guards that a failed write of the nothing-to-clean line is an error.
-#[test]
-fn clean_reports_a_failed_nothing_to_clean_write() {
-    let dir = tempfile::tempdir().unwrap();
-    let kept = dir.path().join("kept");
-    fs::create_dir_all(&kept).unwrap();
-    let config = format!("repositories = [\"{}\"]\n", kept.display()).into_bytes();
-    let mut out = FailingWriter;
-    let mut app = test_app(config, dir.path(), &mut out);
-    assert!(clean(&mut app).is_err());
-}
-
-/// Guards that `clean` returns its save error after reporting the removal.
+/// Guards that `clean` saves before it reports: a failed save errors, names the config
+/// file, and prints no removal line.
 #[test]
 fn clean_reports_a_failed_save() {
     let dir = tempfile::tempdir().unwrap();
     let mut out: Vec<u8> = Vec::new();
-    let sys = SaveFailSys {
+    let sys = MemorySys {
         config: b"repositories = [\"/nonexistent-9up-test\"]\n".to_vec(),
+        write_fails: true,
     };
     let mut app = app_with(Box::new(sys), dir.path(), &mut out);
-    assert!(clean(&mut app).is_err());
+    let err = clean(&mut app).unwrap_err();
+    assert!(err.to_string().contains("config.toml"), "{err}");
     let text = String::from_utf8(out).unwrap();
-    assert!(text.contains("Removed /nonexistent-9up-test."), "{text}");
+    assert!(!text.contains("Removed /nonexistent-9up-test."), "{text}");
 }
 
 /// Guards that `exec` prints a comment entry from the config.
@@ -550,16 +507,6 @@ fn exec_prints_a_comment_entry() {
     assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_ok());
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("note"), "{text}");
-}
-
-/// Guards that a failed write of a comment entry is an error.
-#[test]
-fn exec_reports_a_failed_comment_write() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = b"repositories = [\"# note\"]\n".to_vec();
-    let mut out = FailingWriter;
-    let mut app = test_app(config, dir.path(), &mut out);
-    assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_err());
 }
 
 /// Guards that a write failing after the group header, on the repository name line,
@@ -610,14 +557,4 @@ fn exec_prints_a_repository_error() {
     assert!(exec(&mut app, &paths, 3, &["ls".to_owned()]).is_ok());
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("Could not read the repository."), "{text}");
-}
-
-/// Guards that a failed header write stops `exec` before any command runs.
-#[test]
-fn exec_reports_a_failed_header_write() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = repo_config(dir.path());
-    let mut out = FailingWriter;
-    let mut app = test_app(config, dir.path(), &mut out);
-    assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_err());
 }

@@ -36,7 +36,12 @@ pub fn save(sys: &dyn Sys, path: &Path, entries: &[String]) -> io::Result<()> {
         // Only a missing file starts fresh. Any other read failure is an error:
         // overwriting would drop the file's other keys unseen.
         Err(err) if err.kind() == io::ErrorKind::NotFound => DocumentMut::new(),
-        Err(err) => return Err(err),
+        Err(err) => {
+            return Err(io::Error::new(
+                err.kind(),
+                format!("cannot read {}: {err}", path.display()),
+            ));
+        }
     };
     match doc.get_mut("repositories").and_then(Item::as_array_mut) {
         Some(array) => sync_array(array, entries),
@@ -46,7 +51,12 @@ pub fn save(sys: &dyn Sys, path: &Path, entries: &[String]) -> io::Result<()> {
     if !text.ends_with('\n') {
         text.push('\n');
     }
-    sys.write(path, text.as_bytes())
+    sys.write(path, text.as_bytes()).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("cannot write {}: {err}", path.display()),
+        )
+    })
 }
 
 /// Update the array in place, not rebuilt: drop values the list lost, append values it gained.
@@ -74,7 +84,6 @@ fn sync_array(array: &mut Array, entries: &[String]) {
         if keep[index] {
             index += 1;
         } else {
-            rescue_comments(array, index);
             array.remove(index);
             keep.remove(index);
         }
@@ -89,6 +98,25 @@ fn sync_array(array: &mut Array, entries: &[String]) {
     }
     if needed.is_empty() {
         return;
+    }
+    // Without a trailing comma, the last value's suffix holds the break before `]`. Left
+    // there, an appended value's comma renders after that break, on a line of its own.
+    if !array.is_empty() {
+        let suffix = array
+            .iter()
+            .last()
+            .map(suffix_of)
+            .unwrap_or_default()
+            .to_owned();
+        if !suffix.contains('#') && !suffix.is_empty() {
+            let trailing_empty = array.trailing().as_str().unwrap_or_default().is_empty();
+            let mut last = array.remove(array.len() - 1);
+            last.decor_mut().set_suffix("");
+            array.push_formatted(last);
+            if trailing_empty {
+                array.set_trailing(suffix);
+            }
+        }
     }
     let was_empty = array.is_empty();
     // A comment after the last value, on its line, sits in the array's trailing text.
@@ -117,55 +145,6 @@ fn sync_array(array: &mut Array, entries: &[String]) {
     }
 }
 
-/// `toml_edit` stores a value's raw text on the value: a comment before it in its prefix, one
-/// after it (before its comma) in its suffix. Before removal, move the prefix comment forward to
-/// the next value, and the suffix comment back onto the previous value's line when that line has
-/// no comment of its own, or forward when there is no previous value.
-fn rescue_comments(array: &mut Array, index: usize) {
-    let (prefix, suffix) = array
-        .get(index)
-        .map(|value| (prefix_of(value), suffix_of(value)))
-        .unwrap_or_default();
-    let head = comment_head(prefix);
-    let mut notes = suffix_comments(suffix).into_iter();
-    let mut forward: Vec<String> = Vec::new();
-    // The first suffix comment moves back if the previous value's line has no comment;
-    // the rest go forward, in file order after the head comment.
-    if let Some(first) = notes.next() {
-        let mut moved_back = false;
-        if index > 0
-            && let Some(previous) = array.get_mut(index - 1)
-        {
-            let old = suffix_of(previous);
-            if !old.contains('#') {
-                let old = old.to_owned();
-                previous.decor_mut().set_suffix(format!("{old}{first}"));
-                moved_back = true;
-            }
-        }
-        if !moved_back {
-            forward.push(first);
-        }
-    }
-    forward.extend(notes);
-    if let Some(head) = &head {
-        move_forward(array, index, head);
-    }
-    for note in &forward {
-        move_forward(array, index, note);
-    }
-}
-
-/// Each comment line of a raw suffix, in the " # ..." form a comment takes after a value. The last
-/// value's suffix reaches `]`, so it spans lines and holds any own-line comment before `]` too.
-fn suffix_comments(suffix: &str) -> Vec<String> {
-    suffix
-        .lines()
-        .filter(|line| line.contains('#'))
-        .map(|line| format!(" {}", line.trim_start()))
-        .collect()
-}
-
 /// The raw text a value's decor holds before it.
 fn prefix_of(value: &Value) -> &str {
     value
@@ -184,16 +163,6 @@ fn suffix_of(value: &Value) -> &str {
         .unwrap_or_default()
 }
 
-/// A raw prefix up to its final line break, when that holds a comment. The break and the
-/// indentation after it belong to the following value.
-fn comment_head(prefix: &str) -> Option<String> {
-    let head = match prefix.rfind('\n') {
-        Some(index) => &prefix[..index],
-        None => prefix,
-    };
-    head.contains('#').then(|| head.to_owned())
-}
-
 /// The first line of a raw text, when it holds a comment.
 fn line_comment(text: &str) -> Option<String> {
     let line = match text.find('\n') {
@@ -201,33 +170,6 @@ fn line_comment(text: &str) -> Option<String> {
         None => text,
     };
     line.contains('#').then(|| line.to_owned())
-}
-
-/// Move a rescued comment to the next value's prefix, or the array's trailing text if none.
-fn move_forward(array: &mut Array, index: usize, text: &str) {
-    if let Some(next) = array.get_mut(index + 1) {
-        let old = prefix_of(next).to_owned();
-        next.decor_mut().set_prefix(join(text, &old));
-    } else {
-        let trailing = array.trailing().as_str().unwrap_or_default();
-        array.set_trailing(join(text, trailing));
-    }
-}
-
-/// Join a rescued comment onto the following raw text. If that text opens on the same line
-/// (a comment of its own), break the line first so the two comments never merge.
-fn join(head: &str, rest: &str) -> String {
-    if rest.is_empty() || rest.starts_with('\n') {
-        return format!("{head}{rest}");
-    }
-    let last_line = head.rsplit('\n').next().unwrap_or_default();
-    let indent = last_line.len() - last_line.trim_start_matches(' ').len();
-    let indent = if indent == 0 { 4 } else { indent };
-    format!(
-        "{head}\n{}{}",
-        " ".repeat(indent),
-        rest.trim_start_matches(' ')
-    )
 }
 
 /// A new value's whitespace: the last value's line break and indentation, minus any decor comment.

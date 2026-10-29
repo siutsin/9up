@@ -13,6 +13,54 @@ fn output(raw_status: i32, stdout: &str, stderr: &str) -> Output {
     }
 }
 
+const ORIGIN_REGEXP: &str = "remote.origin.url /srv/git.git\n\
+    remote.origin.fetch +refs/heads/*:refs/remotes/origin/*\n";
+
+/// The git queries most stubs share, scripted once; a stub overrides only the
+/// answers its scenario changes and keeps its own arms for the rest.
+#[derive(Clone, Copy)]
+struct CommonScript {
+    regexp: &'static str,
+    current: &'static str,
+    branch_remote: Option<&'static str>,
+    branch_merge: Option<&'static str>,
+    refs: &'static str,
+}
+
+/// The plain repository most scenarios run against: remote `origin`, branch `main`.
+const COMMON: CommonScript = CommonScript {
+    regexp: ORIGIN_REGEXP,
+    current: "main",
+    branch_remote: Some("origin\n"),
+    branch_merge: Some("refs/heads/main\n"),
+    refs: "",
+};
+
+/// A scripted branch config value, or git's exit 1 when the key is unset.
+fn config_get(value: Option<&'static str>) -> io::Result<Output> {
+    match value {
+        Some(value) => Ok(output(0, value, "")),
+        None => Ok(output(1, "", "")),
+    }
+}
+
+/// Answer a shared query from the script; `None` leaves the call to the stub.
+fn common_answer(script: &CommonScript, argv: &[&str]) -> Option<io::Result<Output>> {
+    let answer = match argv {
+        ["config", "--get-regexp", ..] => output(0, script.regexp, ""),
+        ["symbolic-ref", "-q", "HEAD"] => {
+            output(0, &format!("refs/heads/{}\n", script.current), "")
+        }
+        ["config", "--get", "branch.main.remote"] => return Some(config_get(script.branch_remote)),
+        ["config", "--get", "branch.main.merge"] => return Some(config_get(script.branch_merge)),
+        ["rev-parse", "--absolute-git-dir"] => output(0, "/repo/.git\n", ""),
+        ["rev-parse", "--show-toplevel"] => output(0, "/repo\n", ""),
+        ["for-each-ref", ..] => output(0, script.refs, ""),
+        _ => return None,
+    };
+    Some(Ok(answer))
+}
+
 /// A system answering enough git for the fetch and exec flows; fetch is scripted per test.
 struct StubSys {
     fetch: FetchStub,
@@ -38,19 +86,12 @@ enum FetchStub {
 }
 
 impl Sys for StubSys {
-    /// Answer the queries `update_repo` makes, with only the fetch varying per test.
+    /// Answer the shared queries from `COMMON`, with only the fetch varying per test.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+        if let Some(answer) = common_answer(&COMMON, argv) {
+            return answer;
+        }
         match argv {
-            ["config", "--get-regexp", ..] => Ok(output(
-                0,
-                "remote.origin.url /srv/git.git\nremote.origin.fetch +refs/heads/*:refs/remotes/origin/*\n",
-                "",
-            )),
-            ["symbolic-ref", "-q", "HEAD"] => Ok(output(0, "refs/heads/main\n", "")),
-            ["config", "--get", "branch.main.remote"] => Ok(output(0, "origin\n", "")),
-            ["config", "--get", "branch.main.merge"] => Ok(output(0, "refs/heads/main\n", "")),
-            ["rev-parse", "--absolute-git-dir"] => Ok(output(0, "/repo/.git\n", "")),
-            ["rev-parse", "--show-toplevel"] => Ok(output(0, "/repo\n", "")),
             ["fetch", ..] => {
                 if argv.contains(&"--prune") {
                     self.prune_seen.set(true);
@@ -65,7 +106,7 @@ impl Sys for StubSys {
                     FetchStub::Changes => Ok(output(0, "* 0 0 refs/remotes/origin/feat\n", "")),
                 }
             }
-            _ => Ok(output(0, "", "")),
+            _ => panic!("unexpected git call: {argv:?}"),
         }
     }
 
@@ -205,21 +246,18 @@ struct FlowSys {
 }
 
 impl Sys for FlowSys {
-    /// Answer the branch config lookups as scripted, failing the ones set to `None`.
+    /// Answer every query from the script, failing the branch gets set to `None`.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
-        match argv {
-            ["config", "--get-regexp", ..] => Ok(output(0, self.regexp, "")),
-            ["symbolic-ref", "-q", "HEAD"] => Ok(output(0, "refs/heads/main\n", "")),
-            ["config", "--get", "branch.main.remote"] => match self.branch_remote {
-                Some(value) => Ok(output(0, value, "")),
-                None => Ok(output(1, "", "")),
-            },
-            ["config", "--get", "branch.main.merge"] => match self.branch_merge {
-                Some(value) => Ok(output(0, value, "")),
-                None => Ok(output(1, "", "")),
-            },
-            _ => Ok(output(0, "", "")),
+        let script = CommonScript {
+            regexp: self.regexp,
+            branch_remote: self.branch_remote,
+            branch_merge: self.branch_merge,
+            ..COMMON
+        };
+        if let Some(answer) = common_answer(&script, argv) {
+            return answer;
         }
+        panic!("unexpected git call: {argv:?}")
     }
 }
 
@@ -322,24 +360,19 @@ const BRANCH_REFS: &str = "refs/heads/main\0\
 impl Sys for BranchSys {
     /// Serve the scripted snapshot and action; the merge base always allows a fast-forward.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+        if self.refs_fail && matches!(argv, ["for-each-ref", ..]) {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "no git here"));
+        }
+        let script = CommonScript {
+            current: self.current,
+            refs: self.refs,
+            ..COMMON
+        };
+        if let Some(answer) = common_answer(&script, argv) {
+            return answer;
+        }
         match argv {
-            ["config", "--get-regexp", ..] => Ok(output(
-                0,
-                "remote.origin.url /srv/git.git\nremote.origin.fetch +refs/heads/*:refs/remotes/origin/*\n",
-                "",
-            )),
-            ["symbolic-ref", "-q", "HEAD"] => {
-                Ok(output(0, &format!("refs/heads/{}\n", self.current), ""))
-            }
-            ["rev-parse", "--absolute-git-dir"] => Ok(output(0, "/repo/.git\n", "")),
-            ["rev-parse", "--show-toplevel"] => Ok(output(0, "/repo\n", "")),
-            ["for-each-ref", ..] => {
-                if self.refs_fail {
-                    Err(io::Error::new(io::ErrorKind::NotFound, "no git here"))
-                } else {
-                    Ok(output(0, self.refs, ""))
-                }
-            }
+            ["fetch", ..] => Ok(output(0, "", "")),
             ["merge-base", ..] => Ok(output(0, "1111111111111111111111111111111111111111\n", "")),
             ["merge", ..] | ["branch", "-f", ..] => match self.action {
                 ActionStub::FailsSilently => Ok(output(256, "", "")),
@@ -348,7 +381,7 @@ impl Sys for BranchSys {
                     Err(io::Error::new(io::ErrorKind::NotFound, "no git here"))
                 }
             },
-            _ => Ok(output(0, "", "")),
+            _ => panic!("unexpected git call: {argv:?}"),
         }
     }
 }
@@ -550,6 +583,20 @@ fn a_fetch_with_changes_reports_the_new_branch() {
     }
 }
 
+/// A system with a working remote config whose HEAD is detached.
+struct DetachedSys;
+
+impl Sys for DetachedSys {
+    /// The config call succeeds; `symbolic-ref` fails, as it does on a detached HEAD.
+    fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+        match argv {
+            ["config", "--get-regexp", ..] => Ok(output(0, ORIGIN_REGEXP, "")),
+            ["symbolic-ref", "-q", "HEAD"] => Ok(output(256, "", "")),
+            _ => panic!("unexpected git call: {argv:?}"),
+        }
+    }
+}
+
 /// Guards `current_only` on a detached HEAD; with no branch there is no remote to pick.
 #[test]
 fn a_detached_head_with_current_only_is_a_repository_error() {
@@ -558,12 +605,83 @@ fn a_detached_head_with_current_only_is_a_repository_error() {
         fetch_only: true,
         prune: false,
     };
-    let report = update_repo(&DeadSys, Path::new("/repo"), "repo", &options);
+    let report = update_repo(&DetachedSys, Path::new("/repo"), "repo", &options);
     match &report.steps[..] {
         [Step::Error(message)] => {
             assert_eq!(message, "HEAD is detached, so no remote is tracked.")
         }
         _ => panic!("unexpected steps"),
+    }
+}
+
+/// A system whose git cannot start at all.
+struct ConfigStartSys;
+
+impl Sys for ConfigStartSys {
+    /// The config call is the first one `update_repo` makes, and it cannot start.
+    fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+        match argv {
+            ["config", "--get-regexp", ..] => {
+                Err(io::Error::new(io::ErrorKind::NotFound, "no git here"))
+            }
+            _ => panic!("unexpected git call: {argv:?}"),
+        }
+    }
+}
+
+/// Guards a git that cannot start on the config call; it is a repository error,
+/// not the "No remotes." that a working git with no remotes earns.
+#[test]
+fn a_config_call_that_cannot_start_is_a_repository_error() {
+    let options = Options {
+        current_only: false,
+        fetch_only: true,
+        prune: false,
+    };
+    let report = update_repo(&ConfigStartSys, Path::new("/repo"), "repo", &options);
+    match &report.steps[..] {
+        [Step::Error(message)] => {
+            assert!(message.starts_with("Could not run git"), "{message}");
+            assert_ne!(message, "No remotes.");
+        }
+        _ => panic!("unexpected steps"),
+    }
+}
+
+/// A system whose config call exits with a scripted status and stderr.
+struct ConfigStatusSys {
+    raw_status: i32,
+    stderr: &'static str,
+}
+
+impl Sys for ConfigStatusSys {
+    /// Only the config call is scripted; the update ends on its answer.
+    fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+        match argv {
+            ["config", "--get-regexp", ..] => Ok(output(self.raw_status, "", self.stderr)),
+            _ => panic!("unexpected git call: {argv:?}"),
+        }
+    }
+}
+
+/// Guards the config call's exit contract: exit 1 is git's no-match answer, a
+/// hard failure reports git's error line, and a silent one the fallback naming
+/// the command and status.
+#[test]
+fn the_config_calls_exit_status_sets_the_error() {
+    for (raw_status, stderr, message) in [
+        (256, "", "No remotes."),
+        (512, "fatal: bad config\n", "fatal: bad config"),
+        (512, "", "git config failed with exit status: 2."),
+    ] {
+        let sys = ConfigStatusSys { raw_status, stderr };
+        let options = Options {
+            current_only: false,
+            fetch_only: true,
+            prune: false,
+        };
+        let report = update_repo(&sys, Path::new("/repo"), "repo", &options);
+        assert_error(&report, message);
     }
 }
 
@@ -573,10 +691,14 @@ struct RefspecLessSys;
 impl Sys for RefspecLessSys {
     /// A remote with a URL but no fetch line is the case the skip line exists for.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
-        match argv {
-            ["config", "--get-regexp", ..] => Ok(output(0, "remote.empty.url /srv/git.git\n", "")),
-            _ => Ok(output(0, "", "")),
+        let script = CommonScript {
+            regexp: "remote.empty.url /srv/git.git\n",
+            ..COMMON
+        };
+        if let Some(answer) = common_answer(&script, argv) {
+            return answer;
         }
+        panic!("unexpected git call: {argv:?}")
     }
 }
 
@@ -622,14 +744,15 @@ const SKIP_REFS: &str = "refs/heads/main\0aa\0refs/remotes/origin/main\n\
 impl Sys for SkipSys {
     /// Answer each branch's merge base so every arm of the branch step is reached once.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+        let script = CommonScript {
+            refs: SKIP_REFS,
+            ..COMMON
+        };
+        if let Some(answer) = common_answer(&script, argv) {
+            return answer;
+        }
         match argv {
-            ["config", "--get-regexp", ..] => Ok(output(
-                0,
-                "remote.origin.url /srv/git.git\nremote.origin.fetch +refs/heads/*:refs/remotes/origin/*\n",
-                "",
-            )),
-            ["symbolic-ref", "-q", "HEAD"] => Ok(output(0, "refs/heads/main\n", "")),
-            ["for-each-ref", ..] => Ok(output(0, SKIP_REFS, "")),
+            ["fetch", ..] => Ok(output(0, "", "")),
             ["merge-base", "aa", "bb"] => Ok(output(0, "aa\n", "")),
             ["merge-base", "ee", "ff"] => Ok(output(256, "", "")),
             ["merge-base", "gg", "hh"] => Ok(output(0, "hh\n", "")),
@@ -639,7 +762,7 @@ impl Sys for SkipSys {
             ["merge", ..] => Ok(output(0, "", "")),
             ["branch", "-f", "--", "stuck", ..] => Ok(output(256, "", "some plain failure\n")),
             ["branch", "-f", ..] => Ok(output(0, "", "")),
-            _ => Ok(output(0, "", "")),
+            _ => panic!("unexpected git call: {argv:?}"),
         }
     }
 }
@@ -706,6 +829,129 @@ fn the_branch_step_skips_and_reports_each_arm() {
     }
 }
 
+/// `adep` tracks the local branch `zzz`, and sorts before it in the snapshot.
+const CHAIN_REFS: &str = "refs/heads/adep\0a1\0refs/heads/zzz\n\
+    refs/heads/zzz\0z1\0refs/remotes/origin/zzz\n\
+    refs/remotes/origin/zzz\0z2\0\n";
+
+/// A system where `zzz` moves to a new SHA and `adep` can follow it there.
+struct ChainSys;
+
+impl Sys for ChainSys {
+    /// `adep` is up to date against `zzz`'s old SHA but fast-forwards to its new one,
+    /// so only processing `zzz` first lets `adep` move.
+    fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+        let script = CommonScript {
+            current: "other",
+            refs: CHAIN_REFS,
+            ..COMMON
+        };
+        if let Some(answer) = common_answer(&script, argv) {
+            return answer;
+        }
+        match argv {
+            ["fetch", ..] => Ok(output(0, "", "")),
+            ["merge-base", "a1", "z1"] => Ok(output(0, "z1\n", "")),
+            ["merge-base", "a1", "z2"] => Ok(output(0, "a1\n", "")),
+            ["merge-base", "z1", "z2"] => Ok(output(0, "z1\n", "")),
+            ["branch", "-f", ..] => Ok(output(0, "", "")),
+            _ => panic!("unexpected git call: {argv:?}"),
+        }
+    }
+}
+
+/// Guards local-branch chains; a follower that sorts first must still see the
+/// tracked branch's move, and the steps stay in name order.
+#[test]
+fn a_branch_tracking_a_local_branch_sees_its_move() {
+    let options = Options {
+        current_only: false,
+        fetch_only: false,
+        prune: false,
+    };
+    let report = update_repo(&ChainSys, Path::new("/repo"), "repo", &options);
+    let names: Vec<&str> = report
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            Step::Branch { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, ["adep", "zzz"]);
+    match branch_outcome(&report, "adep") {
+        BranchOutcome::Updated { from, to } => {
+            assert_eq!(from, "a1");
+            assert_eq!(to, "z2");
+        }
+        _ => panic!("unexpected outcome for adep"),
+    }
+    match branch_outcome(&report, "zzz") {
+        BranchOutcome::Updated { from, to } => {
+            assert_eq!(from, "z1");
+            assert_eq!(to, "z2");
+        }
+        _ => panic!("unexpected outcome for zzz"),
+    }
+}
+
+/// A branch whose name holds the replacement character, as lossy decoding of a
+/// non-UTF-8 name produces; its upstream has moved.
+const MANGLED_REFS: &str = "refs/heads/bad\u{FFFD}name\0b1\0refs/remotes/origin/main\n\
+    refs/remotes/origin/main\0m2\0\n";
+
+/// A system that panics on any mutating call, so a mangled name can never be moved.
+struct MangledSys {
+    refs: &'static str,
+}
+
+impl Sys for MangledSys {
+    /// The merge base would allow a fast-forward; only the mangled name blocks the move.
+    fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+        let script = CommonScript {
+            current: "other",
+            refs: self.refs,
+            ..COMMON
+        };
+        if let Some(answer) = common_answer(&script, argv) {
+            return answer;
+        }
+        match argv {
+            ["fetch", ..] => Ok(output(0, "", "")),
+            ["merge-base", "b1", "m2"] => Ok(output(0, "b1\n", "")),
+            ["merge-base", "g1", "g2"] => Ok(output(0, "g1\n", "")),
+            ["merge-base", "m2", "m2"] => Ok(output(0, "m2\n", "")),
+            ["merge", ..] | ["branch", ..] => {
+                panic!("mutating git call for a non-UTF-8 name: {argv:?}")
+            }
+            _ => panic!("unexpected git call: {argv:?}"),
+        }
+    }
+}
+
+/// Guards a non-UTF-8 branch name; it is an error step, never an update under
+/// the mangled name, and git is never asked to move it.
+#[test]
+fn a_branch_name_that_is_not_valid_utf8_is_an_error() {
+    let options = Options {
+        current_only: false,
+        fetch_only: false,
+        prune: false,
+    };
+    let report = update_repo(
+        &MangledSys { refs: MANGLED_REFS },
+        Path::new("/repo"),
+        "repo",
+        &options,
+    );
+    match branch_outcome(&report, "bad\u{FFFD}name") {
+        BranchOutcome::Error(message) => {
+            assert_eq!(message, "branch or upstream name is not valid UTF-8")
+        }
+        _ => panic!("unexpected outcome for the mangled branch"),
+    }
+}
+
 /// Guards the dirty work tree case; git's wording must map to "uncommitted changes".
 #[test]
 fn a_merge_failure_with_the_local_changes_wording_reports_uncommitted_changes() {
@@ -750,11 +996,10 @@ struct ExecSys;
 impl Sys for ExecSys {
     /// Answer the repository lookups that `exec_repo` makes first.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
-        match argv {
-            ["rev-parse", "--absolute-git-dir"] => Ok(output(0, "/repo/.git\n", "")),
-            ["rev-parse", "--show-toplevel"] => Ok(output(0, "/repo\n", "")),
-            _ => Ok(output(0, "", "")),
+        if let Some(answer) = common_answer(&COMMON, argv) {
+            return answer;
         }
+        panic!("unexpected git call: {argv:?}")
     }
 
     /// Return fixed output, so the test can check both streams reach the report.
@@ -803,15 +1048,13 @@ fn push_updated_records_the_step_when_the_snapshot_lacks_the_branch() {
         upstream: "refs/remotes/origin/main".to_owned(),
     }];
     let mut shas = vec![("refs/remotes/origin/main".to_owned(), "cc".to_owned())];
-    let mut steps = Vec::new();
-    push_updated(&mut steps, &branches, &mut shas, 0, "bb");
-    match &steps[..] {
-        [
-            Step::Branch {
-                name,
-                outcome: BranchOutcome::Updated { from, to },
-            },
-        ] => {
+    let mut slot = None;
+    push_updated(&mut slot, &branches, &mut shas, 0, "bb");
+    match &slot {
+        Some(Step::Branch {
+            name,
+            outcome: BranchOutcome::Updated { from, to },
+        }) => {
             assert_eq!(name, "main");
             assert_eq!(from, "aa");
             assert_eq!(to, "bb");
@@ -837,4 +1080,151 @@ fn parse_fetch_output_classifies_and_names() {
             (Kind::NewTag, vec!["v1".to_owned()]),
         ]
     );
+}
+
+/// Two branches tracking each other, plus one tracking itself: the dependency
+/// order has no ready branch until the cycle is broken by name order.
+const CYCLE_REFS: &str = "refs/heads/a\0a1\0refs/heads/b\n\
+    refs/heads/b\0b1\0refs/heads/a\n\
+    refs/heads/loop\0l1\0refs/heads/loop\n";
+
+/// A system scripting the cycle: `a` fast-forwards to `b`, after which `b` is up
+/// to date against the moved `a`; `loop` is up to date against itself.
+struct CycleSys;
+
+impl Sys for CycleSys {
+    /// Answer the snapshot and merge bases for the mutual-tracking cycle.
+    fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+        let script = CommonScript {
+            current: "other",
+            refs: CYCLE_REFS,
+            ..COMMON
+        };
+        if let Some(answer) = common_answer(&script, argv) {
+            return answer;
+        }
+        match argv {
+            ["fetch", ..] => Ok(output(0, "", "")),
+            ["merge-base", "a1", "b1"] => Ok(output(0, "a1\n", "")),
+            ["merge-base", "b1", "b1"] => Ok(output(0, "b1\n", "")),
+            ["merge-base", "l1", "l1"] => Ok(output(0, "l1\n", "")),
+            ["branch", "-f", ..] => Ok(output(0, "", "")),
+            _ => panic!("unexpected git call: {argv:?}"),
+        }
+    }
+}
+
+/// Guards a tracking cycle; processing must terminate, the movable branch still
+/// moves, and a self-tracking branch reads as up to date, not as a dependency.
+#[test]
+fn a_tracking_cycle_terminates_and_still_updates() {
+    let options = Options {
+        current_only: false,
+        fetch_only: false,
+        prune: false,
+    };
+    let report = update_repo(&CycleSys, Path::new("/repo"), "repo", &options);
+    match branch_outcome(&report, "a") {
+        BranchOutcome::Updated { from, to } => {
+            assert_eq!(from, "a1");
+            assert_eq!(to, "b1");
+        }
+        _ => panic!("unexpected outcome for a"),
+    }
+    assert!(matches!(
+        branch_outcome(&report, "b"),
+        BranchOutcome::UpToDate
+    ));
+    assert!(matches!(
+        branch_outcome(&report, "loop"),
+        BranchOutcome::UpToDate
+    ));
+}
+
+/// A clean branch name whose upstream holds the replacement character, as lossy
+/// decoding of a non-UTF-8 remote branch produces.
+const MANGLED_UPSTREAM_REFS: &str = "refs/heads/good\0g1\0refs/remotes/origin/bad\u{FFFD}\n\
+    refs/remotes/origin/bad\u{FFFD}\0g2\0\n";
+
+/// Guards a non-UTF-8 upstream name; the branch is an error step and git is never
+/// asked to move it, even though its own name is clean.
+#[test]
+fn an_upstream_name_that_is_not_valid_utf8_is_an_error() {
+    let options = Options {
+        current_only: false,
+        fetch_only: false,
+        prune: false,
+    };
+    let report = update_repo(
+        &MangledSys {
+            refs: MANGLED_UPSTREAM_REFS,
+        },
+        Path::new("/repo"),
+        "repo",
+        &options,
+    );
+    match branch_outcome(&report, "good") {
+        BranchOutcome::Error(message) => {
+            assert_eq!(message, "branch or upstream name is not valid UTF-8")
+        }
+        _ => panic!("unexpected outcome for good"),
+    }
+}
+
+/// Mangled names on branches that need no move: one has no upstream, the other's
+/// upstream is missing locally. Both are silent cases, refusal or not.
+const MANGLED_INERT_REFS: &str = "refs/heads/bad\u{FFFD}name\0b1\0\n\
+    refs/heads/lost\u{FFFD}name\0c1\0refs/remotes/origin/gone\n";
+
+/// Guards the refusal's ordering: a mangled branch that would not move anyway is
+/// skipped silently, like any other branch with no upstream or a missing one.
+#[test]
+fn a_mangled_branch_that_needs_no_move_is_skipped_silently() {
+    let options = Options {
+        current_only: false,
+        fetch_only: false,
+        prune: false,
+    };
+    let report = update_repo(
+        &MangledSys {
+            refs: MANGLED_INERT_REFS,
+        },
+        Path::new("/repo"),
+        "repo",
+        &options,
+    );
+    let branch_steps = report
+        .steps
+        .iter()
+        .filter(|step| matches!(step, Step::Branch { .. }))
+        .count();
+    assert_eq!(branch_steps, 0);
+}
+
+/// A mangled branch already at its upstream: the snapshot's own SHA is all the
+/// comparison needs, so it reads as up to date, not as a name error.
+const MANGLED_CURRENT_REFS: &str = "refs/heads/bad\u{FFFD}name\0m2\0refs/remotes/origin/main\n\
+    refs/remotes/origin/main\0m2\0\n";
+
+/// Guards the refusal's ordering: a mangled branch that is up to date reports
+/// that, because no move means no name is spelled back to git.
+#[test]
+fn a_mangled_branch_that_is_up_to_date_reports_up_to_date() {
+    let options = Options {
+        current_only: false,
+        fetch_only: false,
+        prune: false,
+    };
+    let report = update_repo(
+        &MangledSys {
+            refs: MANGLED_CURRENT_REFS,
+        },
+        Path::new("/repo"),
+        "repo",
+        &options,
+    );
+    assert!(matches!(
+        branch_outcome(&report, "bad\u{FFFD}name"),
+        BranchOutcome::UpToDate
+    ));
 }
