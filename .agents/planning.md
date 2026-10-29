@@ -308,6 +308,9 @@ the `.git` layout, the `walkdir` search) work on path values and need no service
 A `Report` carries data only. Milestone 2 needs no type change: run `update_repo` on many threads, collect the
 `Report` values, render in order.
 
+Each module's unit tests sit in `src/<module>/tests.rs`, a child module declared with `#[cfg(test)] mod tests;`.
+It is `pub(crate)` in `render` and `discover`, which share test helpers.
+
 ## Tests
 
 Tests assert behaviour. Output assertions check the facts a line carries (the repository name, the outcome,
@@ -315,7 +318,7 @@ the reason), never the exact wording, so a wording change does not rewrite the s
 
 Three layers:
 
-- Unit tests inside each `src` file, for the pure parts: path normalisation, the reference-line reading in
+- Unit tests in `src/<module>/tests.rs`, for the pure parts: path normalisation, the reference-line reading in
   `update.rs`, and report rendering in `render.rs`.
 - Integration tests in `tests/cli.rs`, which run the compiled binary in temporary directories with real `git`
   repositories. The fixtures use local file-path remotes, so the suite needs no network.
@@ -323,6 +326,10 @@ Three layers:
   the developer's real config file. Colour is off in tests (not a terminal). The fixtures run `git init -b main`, and the commit
   helper sets `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, so a developer's git configuration
   (signing, hooks) cannot change a result.
+
+Coverage is a gate. `mise run coverage` runs `cargo llvm-cov` with the `tests.rs` files filtered out by name and
+fails under 100 percent line coverage of the production code. Replace the filter with `#[coverage(off)]` on the
+test modules once that attribute is stable.
 
 Behaviour tables, one row per case:
 
