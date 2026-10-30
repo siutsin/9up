@@ -394,6 +394,12 @@ keeps `--fail-under-regions 100` and `--fail-under-functions 100`, so a producti
 function the tests never execute fails the run. A separate CI job reports branch coverage from a
 nightly toolchain, report only, never a gate.
 
+Milestone 2's tests sit in the `commands` unit tests: the latch-based overlap proof, the
+forced-reorder ordering test and the in-flight bound test from Milestone 2's acceptance;
+chunk-loop cases for empty, single, full and partial batches; and a writer that accepts a
+path header then fails, one case each for `update` and for `exec`, for the in-loop render
+error path. None of them asserts on elapsed time.
+
 Behaviour tables, one row per case:
 
 | Area | Cases |
@@ -409,10 +415,10 @@ with the reason in the `clippy.toml` comment.
 
 ## Milestone 2 — Concurrency
 
-Goal: an `update` (and, if it falls out naturally, an `exec`) run works on several repositories at
-once, so a long list of repositories takes the time of its slowest few, not the sum of all of them.
-The Feature Spec above does not change: same output, in the same order, with the same exit codes.
-Only the waiting changes.
+Goal: an `update` and an `exec` run works on several repositories at once, so a long list of
+repositories takes roughly the time of the slowest repository in each batch of at most 8, not
+the sum of all of them. The Feature Spec above does not change: same output, in the same order,
+with the same exit codes. Only the waiting changes.
 
 Shape:
 
@@ -420,18 +426,30 @@ Shape:
   configuration order and its branches still process in dependency order.
 - `update_repo` and `exec_repo` already return data and write nothing, so worker threads produce
   `Report` values and the front end renders them in today's order — path order, then repository
-  name order. No interleaved output, whatever order the work finishes in.
+  name order. No interleaved output, whatever order the work finishes in. Concurrency is within
+  one resolved path group only: inputs are still processed one at a time, so headers, comment
+  lines and path errors print in exactly today's positions, and a repository reached through
+  two inputs is still visited twice, once per group.
 - Threads come from the standard library (scoped threads) over the existing `Sys` seam; no new
-  dependency unless a measured need appears. The shared `Sys` must be `Sync`; `RealSys` holds no
-  mutable state, so this should be a bound, not a redesign.
-- Discovery stays sequential: it is filesystem walking, and the git work it feeds dominates the time.
+  dependency. If the batch-boundary stall in the timing run ever dominates, the fix is a rolling
+  window of join handles in the same helper, still standard library only. The shared `Sys` must
+  be `Sync`, added as a supertrait of `Sys` in `sys.rs`. `RealSys` holds no mutable state and
+  needs no change. One test stub is not `Sync` today: `StubSys` in `update.rs`'s tests holds a
+  `Cell<bool>`; it becomes an `AtomicBool`. No other stub is affected.
+- The bound is a fixed 8 repositories at once (`MAX_CONCURRENT` in `commands.rs`), with no new
+  command-line option. The work is subprocess and network waiting, not CPU work, so the bound
+  does not come from the core count. Revisit only if a timing run against real remotes shows
+  the batch boundary, not the bound, dominating.
+- A worker panic is a bug, like a panic in today's sequential run: the join propagates it. No
+  unwind-catching machinery.
+- Discovery stays sequential: it is filesystem walking, and the git work it feeds dominates
+  the time.
 
-Decisions to settle when building it, with measurements:
-
-- The bound: how many repositories at once. Prefer a fixed default with no new option, unless a
-  many-repository fixture shows the default matters.
-- Whether `exec` parallelises in the same change or follows after.
-
-Acceptance: the behaviour tables above pass unchanged; a test with many repositories shows the
-rendered order identical to a sequential run; timings on a many-repository fixture show the win;
-the coverage gate is unchanged.
+Acceptance: the behaviour tables above pass unchanged; a latch-based test proves two
+repositories are inside `fetch` at the same time (no timing assertions); a second test forces
+the later-named repository to finish first and asserts the rendered output is unchanged,
+repository blocks in name order; a third asserts no more than 8 fetches are ever in flight
+across 10 repositories. Timings on the real configured repository set are recorded in the pull
+request description as evidence; no test asserts on elapsed time. The coverage gate is
+unchanged and still passes: the new chunk loop (empty, single, full and partial batches) and
+the in-loop render error path each have a test, listed in the Tests section.
