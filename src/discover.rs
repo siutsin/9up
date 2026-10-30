@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 use glob::MatchOptions;
 
@@ -193,50 +192,62 @@ fn search(dir: &Path, depth: i32, header: &Path) -> Vec<Repo> {
         }];
     }
     if depth == 0 {
-        // The walk still yields the first level when its minimum depth passes 0, so stop here.
+        // Depth 0 checks the path itself only, which was done above.
         return Vec::new();
     }
     // A negative depth becomes the unlimited case.
     let max_depth = depth.try_into().unwrap_or(usize::MAX);
-    let walk = WalkDir::new(dir)
-        .follow_links(true)
-        .min_depth(1)
-        .max_depth(max_depth);
     let mut repos = Vec::new();
     // A link can reach a directory under a second name; walk each physical directory once,
     // or an aliased repository is reported once per spelling.
     let mut visited = std::collections::HashSet::from([canonical_key(dir)]);
-    let mut iter = walk.into_iter();
-    while let Some(entry) = iter.next() {
-        // Skip an unreadable directory or a symbolic link loop, which walkdir reports as an error.
-        let Ok(entry) = entry else { continue };
-        if !entry.file_type().is_dir() {
+    walk(dir, max_depth, header, &mut visited, &mut repos);
+    repos
+}
+
+/// Walk the directories below `dir`, at most `depth_left` levels down,
+/// collecting the repositories among them into `repos`.
+fn walk(
+    dir: &Path,
+    depth_left: usize,
+    header: &Path,
+    visited: &mut std::collections::HashSet<PathBuf>,
+    repos: &mut Vec<Repo>,
+) {
+    // A directory that cannot be read is skipped, ending this branch.
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    // Collect the paths and drop the listing before recursing, so the walk
+    // holds one directory handle at a time however deep it goes.
+    let paths: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect();
+    for path in paths {
+        // `is_dir` follows links, so a broken link is skipped here too.
+        if !path.is_dir() || path.file_name().is_some_and(|name| name == ".git") {
             continue;
         }
-        let path = entry.path();
-        if path.file_name().is_some_and(|name| name == ".git") {
-            iter.skip_current_dir();
-            continue;
-        }
-        let key = canonical_key(path);
+        let key = canonical_key(&path);
+        // Every directory the walk descends into is in `visited`, so a link back to an
+        // ancestor — a cycle — is met here and ends that branch.
         if visited.contains(&key) {
-            iter.skip_current_dir();
             continue;
         }
-        if is_repo(path) {
+        if is_repo(&path) {
             visited.insert(key);
             repos.push(Repo {
-                name: name_for(path, header),
-                path: entry.into_path(),
+                name: name_for(&path, header),
+                path,
             });
-            iter.skip_current_dir(); // A found repository is not descended into.
-        } else if entry.depth() < max_depth {
+        } else if depth_left > 1 {
             // A directory at the depth limit is never descended, so marking it visited
             // would block a shallower spelling of it that still can be.
             visited.insert(key);
+            walk(&path, depth_left - 1, header, visited, repos);
         }
     }
-    repos
 }
 
 /// Name a repository relative to the input, so output shows where it lives under it.
