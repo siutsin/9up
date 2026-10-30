@@ -16,6 +16,8 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     strategy:
+      # Both OSes always report: one failing must not cancel the other's result.
+      fail-fast: false
       matrix:
         os:
           - ubuntu-latest
@@ -55,6 +57,7 @@ jobs:
         uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
         with:
           cache: false
+          install_args: "aqua:taiki-e/cargo-llvm-cov"
 
       - name: Check the coverage
         run: mise run coverage
@@ -63,7 +66,8 @@ jobs:
     runs-on: ubuntu-latest
 
     # Report only: branch coverage needs a nightly toolchain, and a nightly
-    # wobble must never fail a pull request.
+    # wobble must never fail a pull request. It runs on every change on
+    # purpose, so the table sits on the run whose code it measures.
     continue-on-error: true
 
     steps:
@@ -79,12 +83,13 @@ jobs:
         uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
         with:
           cache: false
+          install_args: "aqua:taiki-e/cargo-llvm-cov"
 
       - name: Report the branch coverage
         run: |
           {
             echo '## Branch coverage (nightly, report only)'
             echo '```'
-            cargo +nightly llvm-cov --locked --branch --ignore-filename-regex 'tests\.rs$' --summary-only
+            cargo +nightly llvm-cov --locked --branch --ignore-filename-regex 'tests\.rs$' --summary-only || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

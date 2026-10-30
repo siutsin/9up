@@ -66,6 +66,24 @@ fn save_does_not_overwrite_a_file_it_cannot_read() {
     );
 }
 
+/// Guards that `save` refuses a wrong-typed `repositories`, like `load`; replacing it
+/// would silently drop its content, and nothing is written.
+#[test]
+fn save_rejects_a_wrong_typed_repositories() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("config.toml");
+    for seed in ["[repositories]\nx = 1\n", "repositories = \"/a\"\n"] {
+        fs::write(&file, seed).unwrap();
+        let err = save(&RealSys, &file, &["/b".to_owned()]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("`repositories` is not an array of strings"),
+            "{err}"
+        );
+        assert_eq!(fs::read_to_string(&file).unwrap(), seed);
+    }
+}
+
 /// Guards that `load` and `save` go through `Sys`, so tests can swap in a fake, and that
 /// a failed write names the file it could not write.
 #[test]

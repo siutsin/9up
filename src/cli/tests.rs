@@ -66,6 +66,20 @@ fn a_bare_long_option_means_update() {
     assert_eq!(shim(&["9up", "--prune"]), ["9up", "update", "--prune"]);
 }
 
+/// Guards that a depth value is skipped like a config value; otherwise `list` as a depth
+/// value reads as the list command and clap blames the wrong thing.
+#[test]
+fn a_depth_value_is_not_a_command_word() {
+    assert_eq!(
+        shim(&["9up", "-C", "f", "--depth", "list"]),
+        ["9up", "update", "-C", "f", "--depth", "list"]
+    );
+    assert_eq!(
+        shim(&["9up", "-t", "list"]),
+        ["9up", "update", "-t", "list"]
+    );
+}
+
 /// Guards a directory named like a command; after `--` it is still updated as a path.
 #[test]
 fn a_path_after_the_separator_is_a_path() {

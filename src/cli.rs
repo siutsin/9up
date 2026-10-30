@@ -95,7 +95,7 @@ fn insert_update(mut args: Vec<OsString>) -> Vec<OsString> {
             after_separator = true;
             break;
         }
-        if token == "-C" || token == "--config" {
+        if token == "-C" || token == "--config" || token == "-t" || token == "--depth" {
             index += 2;
             continue;
         }

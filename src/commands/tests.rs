@@ -127,7 +127,11 @@ fn commands_report_a_failed_write() {
             dir.path(),
             &mut out,
         );
-        assert!(call(&mut app).is_err(), "{name}");
+        assert_eq!(
+            call(&mut app).unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe,
+            "{name}"
+        );
     }
 }
 
@@ -211,7 +215,7 @@ impl crate::sys::Sys for RepoExecSys {
     /// Answer the `rev-parse` calls `exec_repo` makes, so the fake repository reads as real.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<std::process::Output> {
         let stdout = match argv {
-            ["rev-parse", "--absolute-git-dir"] => "/repo/.git\n",
+            ["rev-parse", "--is-bare-repository"] => "false\n",
             ["rev-parse", "--show-toplevel"] => "/repo\n",
             _ => "",
         };
@@ -411,6 +415,19 @@ fn list_prints_the_empty_message() {
     assert!(list(&mut app).is_ok());
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("No repositories configured."), "{text}");
+}
+
+/// Guards that `list` prints a stored entry with its control characters replaced,
+/// so an entry cannot inject escapes or forge a line.
+#[test]
+fn list_cleans_control_characters_in_an_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut out: Vec<u8> = Vec::new();
+    let config = b"repositories = [\"/a\\u001B[31m\\nforged\"]\n".to_vec();
+    let mut app = test_app(config, dir.path(), &mut out);
+    assert!(list(&mut app).is_ok());
+    let text = String::from_utf8(out).unwrap();
+    assert_eq!(text, "/a [31m forged\n");
 }
 
 /// Guards that `list` fails on a broken config rather than printing nothing.

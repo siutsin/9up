@@ -53,7 +53,7 @@ fn common_answer(script: &CommonScript, argv: &[&str]) -> Option<io::Result<Outp
         }
         ["config", "--get", "branch.main.remote"] => return Some(config_get(script.branch_remote)),
         ["config", "--get", "branch.main.merge"] => return Some(config_get(script.branch_merge)),
-        ["rev-parse", "--absolute-git-dir"] => output(0, "/repo/.git\n", ""),
+        ["rev-parse", "--is-bare-repository"] => output(0, "false\n", ""),
         ["rev-parse", "--show-toplevel"] => output(0, "/repo\n", ""),
         ["for-each-ref", ..] => output(0, script.refs, ""),
         _ => return None,
@@ -1005,6 +1005,228 @@ impl Sys for ExecSys {
     /// Return fixed output, so the test can check both streams reach the report.
     fn exec(&self, _dir: &Path, _argv: &[String]) -> io::Result<Output> {
         Ok(output(0, "hello\n", "warn\n"))
+    }
+}
+
+/// A repository whose path bytes are non-UTF-8: git's path answers come back
+/// mangled, while its bare answer is plain text, as git prints it.
+struct MangledPathSys {
+    bare: bool,
+}
+
+impl Sys for MangledPathSys {
+    fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+        match argv {
+            ["rev-parse", "--is-bare-repository"] => {
+                Ok(output(0, if self.bare { "true\n" } else { "false\n" }, ""))
+            }
+            ["rev-parse", "--show-toplevel"] => Ok(output(0, "/repo\u{FFFD}\n", "")),
+            _ => panic!("unexpected git call: {argv:?}"),
+        }
+    }
+
+    /// Echo the directory back, so the test can see where the command ran.
+    fn exec(&self, dir: &Path, _argv: &[String]) -> io::Result<Output> {
+        Ok(output(0, &dir.display().to_string(), ""))
+    }
+}
+
+/// Guards a non-UTF-8 repository path; exec refuses it as unreadable instead of
+/// running the command in a mangled directory that does not exist.
+#[test]
+fn exec_on_a_non_utf8_repository_path_is_an_error() {
+    let report = exec_repo(
+        &MangledPathSys { bare: false },
+        Path::new("/repo"),
+        "repo",
+        &["ls".to_owned()],
+    );
+    assert_eq!(
+        report.error.as_deref(),
+        Some("Could not read the repository.")
+    );
+}
+
+/// Guards a bare non-UTF-8 repository; its work dir is the repository itself,
+/// so exec still runs there instead of refusing a mangled path answer.
+#[test]
+fn exec_in_a_bare_non_utf8_repository_uses_the_repository_directory() {
+    let report = exec_repo(
+        &MangledPathSys { bare: true },
+        Path::new("/repo"),
+        "repo",
+        &["ls".to_owned()],
+    );
+    assert_eq!(report.error, None);
+    assert_eq!(report.stdout, "/repo");
+}
+
+/// The snapshot for the git-directory scenarios: `main` at `aaa`, its upstream at `bbb`.
+const GIT_DIR_REFS: &str = "refs/heads/main\0aaa\0refs/remotes/origin/main\n\
+    refs/remotes/origin/main\0bbb\0\n";
+
+/// A path that is a git directory: not bare, but it has no top level, because
+/// git will not name a work tree from inside the git directory.
+struct GitDirSys;
+
+impl Sys for GitDirSys {
+    fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+        match argv {
+            ["rev-parse", "--is-bare-repository"] => return Ok(output(0, "false\n", "")),
+            ["rev-parse", "--show-toplevel"] => {
+                return Ok(output(
+                    128,
+                    "",
+                    "fatal: this operation must be run in a work tree\n",
+                ));
+            }
+            _ => {}
+        }
+        let script = CommonScript {
+            refs: GIT_DIR_REFS,
+            ..COMMON
+        };
+        if let Some(answer) = common_answer(&script, argv) {
+            return answer;
+        }
+        match argv {
+            ["fetch", ..] => Ok(output(0, "", "")),
+            ["merge-base", "aaa", "bbb"] => Ok(output(0, "aaa\n", "")),
+            ["branch", "-f", ..] => Ok(output(0, "", "")),
+            _ => panic!("unexpected git call: {argv:?}"),
+        }
+    }
+
+    /// Echo the directory back, so the test can see where the command ran.
+    fn exec(&self, dir: &Path, _argv: &[String]) -> io::Result<Output> {
+        Ok(output(0, &dir.display().to_string(), ""))
+    }
+}
+
+/// A system where git answers the bare check but the top-level call cannot start.
+struct TopCallFailsSys;
+
+impl Sys for TopCallFailsSys {
+    fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+        match argv {
+            ["rev-parse", "--is-bare-repository"] => Ok(output(0, "false\n", "")),
+            _ => Err(io::Error::new(io::ErrorKind::NotFound, "no git here")),
+        }
+    }
+}
+
+/// Guards a top-level call that cannot run; exec refuses rather than guessing
+/// a working directory.
+#[test]
+fn exec_is_an_error_when_the_top_level_call_cannot_run() {
+    let report = exec_repo(
+        &TopCallFailsSys,
+        Path::new("/repo"),
+        "repo",
+        &["ls".to_owned()],
+    );
+    assert_eq!(
+        report.error.as_deref(),
+        Some("Could not read the repository.")
+    );
+}
+
+/// Guards a git directory given as the path; exec runs in it, as it has no work tree.
+#[test]
+fn exec_in_a_git_directory_runs_there() {
+    let report = exec_repo(
+        &GitDirSys,
+        Path::new("/repo/.git"),
+        ".git",
+        &["ls".to_owned()],
+    );
+    assert_eq!(report.error, None);
+    assert_eq!(report.stdout, "/repo/.git");
+}
+
+/// Guards an update through a git directory; with no work tree it moves the
+/// branch with `branch -f`, like a bare repository, instead of merging.
+#[test]
+fn update_through_a_git_directory_fast_forwards() {
+    let options = Options {
+        current_only: false,
+        fetch_only: false,
+        prune: false,
+    };
+    let report = update_repo(&GitDirSys, Path::new("/repo/.git"), ".git", &options);
+    match branch_outcome(&report, "main") {
+        BranchOutcome::Updated { from, to } => {
+            assert_eq!(from, "aaa");
+            assert_eq!(to, "bbb");
+        }
+        _ => panic!("unexpected outcome for main"),
+    }
+}
+
+/// Guards the unborn case; the tracked remote fetches while the empty ref
+/// snapshot gives the branch step nothing to visit.
+#[test]
+fn an_unborn_branch_with_current_only_fetches_and_visits_no_branches() {
+    let sys = StubSys::new(FetchStub::Succeeds);
+    let options = Options {
+        current_only: true,
+        fetch_only: false,
+        prune: false,
+    };
+    let report = update_repo(&sys, Path::new("/repo"), "repo", &options);
+    match &report.steps[..] {
+        [
+            Step::Fetch {
+                remote,
+                outcome: FetchOutcome::UpToDate,
+            },
+        ] => assert_eq!(remote, "origin"),
+        steps => panic!("unexpected steps: {}", steps.len()),
+    }
+}
+
+/// A branch tracking a tag reference, outside the heads and remotes namespaces.
+const TAG_UPSTREAM_REFS: &str = "refs/heads/main\0aaa\0refs/tags/v1\n\
+    refs/tags/v1\0bbb\0\n";
+
+/// A system where `main` can fast-forward to the tag it tracks.
+struct TagUpstreamSys;
+
+impl Sys for TagUpstreamSys {
+    fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
+        let script = CommonScript {
+            current: "other",
+            refs: TAG_UPSTREAM_REFS,
+            ..COMMON
+        };
+        if let Some(answer) = common_answer(&script, argv) {
+            return answer;
+        }
+        match argv {
+            ["fetch", ..] => Ok(output(0, "", "")),
+            ["merge-base", "aaa", "bbb"] => Ok(output(0, "aaa\n", "")),
+            ["branch", "-f", ..] => Ok(output(0, "", "")),
+            _ => panic!("unexpected git call: {argv:?}"),
+        }
+    }
+}
+
+/// Guards an upstream outside refs/heads and refs/remotes; the branch still
+/// fast-forwards to the tag, instead of being skipped as if the ref were missing.
+#[test]
+fn a_branch_tracking_a_tag_fast_forwards() {
+    let options = Options {
+        current_only: false,
+        fetch_only: false,
+        prune: false,
+    };
+    let report = update_repo(&TagUpstreamSys, Path::new("/repo"), "repo", &options);
+    match branch_outcome(&report, "main") {
+        BranchOutcome::Updated { from, to } => {
+            assert_eq!(from, "aaa");
+            assert_eq!(to, "bbb");
+        }
+        _ => panic!("unexpected outcome for main"),
     }
 }
 
