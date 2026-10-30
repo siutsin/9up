@@ -59,6 +59,48 @@ mise run coverage
 markdownlint-cli2 '**/*.md'
 ```
 
+### Releasing
+
+Releases run from git tags: cargo-dist builds the binaries, creates the GitHub Release and
+publishes a Homebrew formula to the `siutsin/homebrew-tap` tap.
+
+One-time setup:
+
+- Create the `siutsin/homebrew-tap` repository on GitHub.
+- Add a `HOMEBREW_TAP_TOKEN` secret to this repository, holding a token with write access to
+  the tap. The workflow's own token cannot write to another repository, so the formula
+  publish step uses this one.
+
+The first release is `v0.1.0`, the version already in `Cargo.toml`. Tag it directly once the
+setup above is done:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Every later release, from a clean `master`, with cargo-release installed
+(`cargo install cargo-release --version =1.1.7 --locked`):
+
+```sh
+cargo release patch --execute
+```
+
+Use `minor` or `major` in place of `patch` when the change calls for it. The command bumps
+the version in `Cargo.toml`, commits, tags `v<version>` and pushes. The tag runs the release
+workflow. When it finishes, check the formula landed and installs:
+
+```sh
+brew install siutsin/tap/9up
+```
+
+To change targets or installers, edit `dist-workspace.toml`, run `dist generate` and commit
+the result. `dist` itself comes from its installer, at the version the config pins:
+`curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.1/cargo-dist-installer.sh | sh`.
+The generated workflow carries hand adjustments (action pins, scoped permissions, zizmor
+ignores), and the config's `allow-dirty` entry keeps `dist generate` from overwriting them
+silently — reapply the adjustments to the regenerated file before committing.
+
 ## Credit
 
 9up is inspired by [`gitup`](https://github.com/earwig/git-repo-updater) (git-repo-updater), the Python tool by
