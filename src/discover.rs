@@ -14,6 +14,7 @@ pub enum Resolved {
     PathError(String),
 }
 
+/// Replace a leading `~` with `home`; with no home the path stays as typed.
 pub fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
     let Some(home) = home else {
         return PathBuf::from(path);
@@ -53,6 +54,8 @@ pub fn path_is_live(expanded: &Path) -> bool {
     text.chars().any(|c| matches!(c, '*' | '?' | '[')) && !glob_paths(&text).is_empty()
 }
 
+/// Turn one input into repositories, a comment, or an error: a repository stands
+/// alone, a directory is searched, and a missing path may still be a comment or a glob.
 pub fn resolve(input: &str, cwd: &Path, home: Option<&Path>, depth: i32) -> Resolved {
     if input.is_empty() {
         return Resolved::PathError("doesn't exist.".to_owned());
@@ -141,6 +144,8 @@ pub fn comment_text(input: &str) -> Option<String> {
     Some(text.to_owned())
 }
 
+/// Whether `dir` is itself a git directory: a normal or bare one, or a linked
+/// worktree's admin area.
 fn is_git_dir(dir: &Path) -> bool {
     // A linked worktree's admin directory has HEAD and commondir but no refs, so
     // commondir suffices; a normal or bare one pairs refs with objects.
@@ -178,6 +183,8 @@ fn canonical_key(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// The repositories at or under `dir`, down to `depth`; `dir` itself being one
+/// ends the search there.
 fn search(dir: &Path, depth: i32, header: &Path) -> Vec<Repo> {
     if is_repo(dir) {
         return vec![Repo {
@@ -198,6 +205,8 @@ fn search(dir: &Path, depth: i32, header: &Path) -> Vec<Repo> {
     repos
 }
 
+/// Descend the directories below `dir`, collecting repositories into `repos`;
+/// `visited` gives each physical directory one descent.
 fn walk(
     dir: &Path,
     depth_left: usize,
@@ -251,6 +260,7 @@ fn name_for(repo: &Path, header: &Path) -> String {
     }
 }
 
+/// A path's last component, or the whole path when it has none, as for a root.
 fn last_component(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())

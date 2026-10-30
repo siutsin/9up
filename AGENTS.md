@@ -19,3 +19,5 @@ in production code. Unit tests live in `src/<module>/tests.rs`.
 5. Write idiomatic Rust: the current edition and syntax, the Rust API Guidelines, std first.
 6. Use the GitHub pull request workflow. Work on a branch, never on `master`. Run the local checks before
    every push. Merge only when CI is green. Ask before pushing.
+7. Every function carries a short doc comment, tests and helpers included: one line stating what it
+   guarantees or why it exists, never a restatement of its name.

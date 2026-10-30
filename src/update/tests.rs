@@ -1019,6 +1019,8 @@ struct MangledPathSys {
 }
 
 impl Sys for MangledPathSys {
+    /// Serve the bare check as plain text and the top level with a mangled path,
+    /// as git prints it.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
         match argv {
             ["rev-parse", "--is-bare-repository"] => {
@@ -1074,6 +1076,8 @@ const GIT_DIR_REFS: &str = "refs/heads/main\0aaa\0refs/remotes/origin/main\n\
 struct GitDirSys;
 
 impl Sys for GitDirSys {
+    /// No work tree here: not bare, the top-level call fails, and its own arms
+    /// serve the fetch, the merge-base and the branch move beyond the common script.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
         match argv {
             ["rev-parse", "--is-bare-repository"] => return Ok(output(0, "false\n", "")),
@@ -1111,6 +1115,7 @@ impl Sys for GitDirSys {
 struct TopCallFailsSys;
 
 impl Sys for TopCallFailsSys {
+    /// Answer the bare check only; every other call fails to start.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
         match argv {
             ["rev-parse", "--is-bare-repository"] => Ok(output(0, "false\n", "")),
@@ -1197,6 +1202,8 @@ const TAG_UPSTREAM_REFS: &str = "refs/heads/main\0aaa\0refs/tags/v1\n\
 struct TagUpstreamSys;
 
 impl Sys for TagUpstreamSys {
+    /// The common script with `main` tracking a tag, plus a silent fetch and
+    /// branch move.
     fn git(&self, _dir: &Path, argv: &[&str]) -> io::Result<Output> {
         let script = CommonScript {
             current: "other",

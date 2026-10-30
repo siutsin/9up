@@ -610,8 +610,8 @@ fn ref_exists(dir: &Path, reference: &str) -> bool {
         .success()
 }
 
-// Shared setup: a bare remote, a work clone that pushes to it, and a
-// stale clone that falls behind. Returns (remote, work, stale).
+/// A bare remote, a work clone that pushes to it and a stale clone that falls
+/// behind, as (remote, work, stale).
 fn remote_work_stale(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let remote = dir.join("remote.git");
     git(

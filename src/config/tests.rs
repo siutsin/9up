@@ -150,6 +150,8 @@ fn save_creates_the_one_key_document() {
     assert_eq!(load(&RealSys, &file).unwrap(), entries);
 }
 
+/// Save `entries` over the seeded config; return the file's text and the entries
+/// that load back.
 fn run_save(seed: &str, entries: &[&str]) -> (String, Vec<String>) {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("config.toml");

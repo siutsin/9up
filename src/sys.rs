@@ -133,6 +133,8 @@ fn run_capped(command: &mut Command, cap: usize) -> io::Result<Output> {
     capture(child, cap)
 }
 
+/// Read both of the child's streams on threads under the cap, then return its
+/// output once it exits.
 fn capture(mut child: Child, cap: usize) -> io::Result<Output> {
     let streams = take_piped(child.stdout.take(), "stdout").and_then(|stdout| {
         take_piped(child.stderr.take(), "stderr").map(|stderr| (stdout, stderr))
@@ -172,6 +174,8 @@ fn capture(mut child: Child, cap: usize) -> io::Result<Output> {
 /// closes at once, so only a descendant holding it open can use this up.
 const READER_GRACE: Duration = Duration::from_secs(2);
 
+/// Collect both readers' results; once one is over the cap the child is killed
+/// and the other gets only the grace period.
 fn collect_readers(
     receiver: &std::sync::mpsc::Receiver<(bool, (Vec<u8>, bool))>,
     child: &mut Child,

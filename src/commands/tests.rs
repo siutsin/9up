@@ -304,6 +304,7 @@ impl Write for BudgetWriter {
         Ok(buf.len())
     }
 
+    /// Always succeeds: accepted writes are only counted, never buffered.
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
@@ -626,6 +627,7 @@ struct LatchState {
 }
 
 impl Latch {
+    /// Start empty: nothing started or finished, no reads counted.
     fn new() -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(LatchState {
@@ -674,6 +676,7 @@ impl Latch {
         }
     }
 
+    /// Mark a repository finished and free its in-flight slot, waking any waiter.
     fn finish(&self, dir: &Path) {
         let mut state = self.state.lock().unwrap();
         state.finished.insert(dir.to_path_buf());
@@ -681,6 +684,7 @@ impl Latch {
         self.cond.notify_all();
     }
 
+    /// Release one held repository, leaving the others held.
     fn release(&self, dir: &Path) {
         self.state
             .lock()
@@ -690,17 +694,20 @@ impl Latch {
         self.cond.notify_all();
     }
 
+    /// Release every held repository, and any that start later.
     fn release_all(&self) {
         self.state.lock().unwrap().release_all = true;
         self.cond.notify_all();
     }
 
+    /// Wait until at least `count` repositories have started.
     fn wait_for_started(&self, count: usize) {
         self.wait_until("more repositories to start", |state| {
             state.started.len() >= count
         });
     }
 
+    /// Wait until `dir` has finished.
     fn wait_for_finished(&self, dir: &Path) {
         let dir = dir.to_path_buf();
         self.wait_until("a repository to finish", |state| {
@@ -708,27 +715,33 @@ impl Latch {
         });
     }
 
+    /// A snapshot of the repositories that have started.
     fn started(&self) -> HashSet<PathBuf> {
         self.state.lock().unwrap().started.clone()
     }
 
+    /// A snapshot of the repositories that have finished.
     fn finished(&self) -> HashSet<PathBuf> {
         self.state.lock().unwrap().finished.clone()
     }
 
+    /// The peak number in flight at once, so a test can check the batch bound held.
     fn max_in_flight(&self) -> usize {
         self.state.lock().unwrap().max_in_flight
     }
 
+    /// The config reads counted so far.
     fn reads(&self) -> usize {
         self.state.lock().unwrap().reads
     }
 
+    /// Count one config read.
     fn note_read(&self) {
         self.state.lock().unwrap().reads += 1;
     }
 }
 
+/// A successful output carrying `stdout` and an empty stderr.
 fn latch_output(stdout: &str) -> std::process::Output {
     std::process::Output {
         status: std::os::unix::process::ExitStatusExt::from_raw(0),
@@ -749,6 +762,7 @@ struct LatchSys {
 }
 
 impl LatchSys {
+    /// Serve `mode`'s script over `latch`; starts hold only when `blocking` is set.
     fn new(latch: &Arc<Latch>, mode: LatchMode, blocking: bool) -> Self {
         Self {
             latch: latch.clone(),
@@ -768,6 +782,8 @@ impl LatchSys {
 }
 
 impl crate::sys::Sys for LatchSys {
+    /// Answer from the script: in update mode the config call latches the start
+    /// and `for-each-ref` records the finish.
     fn git(&self, dir: &Path, argv: &[&str]) -> io::Result<std::process::Output> {
         match argv {
             ["config", "--get-regexp", ..] => {
@@ -841,6 +857,7 @@ struct WriterState {
 }
 
 impl TestWriter {
+    /// A writer that records its writes and neither fails nor blocks.
     fn new() -> Self {
         Self {
             inner: Arc::new(WriterInner {
@@ -888,6 +905,7 @@ impl TestWriter {
         String::from_utf8_lossy(&self.inner.state.lock().unwrap().attempts).contains(needle)
     }
 
+    /// Wait until a write is being held open, so the test can act mid-render.
     fn wait_blocked(&self) {
         let mut state = self.inner.state.lock().unwrap();
         while !state.blocked {
@@ -899,6 +917,7 @@ impl TestWriter {
         }
     }
 
+    /// Let the held write complete.
     fn release_block(&self) {
         self.inner.state.lock().unwrap().block_released = true;
         self.inner.cond.notify_all();
@@ -906,6 +925,7 @@ impl TestWriter {
 }
 
 impl Write for TestWriter {
+    /// Record the write, failing or holding it when it completes the armed needle.
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut state = self.inner.state.lock().unwrap();
         state.attempts.extend_from_slice(buf);
@@ -941,6 +961,7 @@ impl Write for TestWriter {
         Ok(buf.len())
     }
 
+    /// Always succeeds: writes are recorded as they arrive, so nothing waits to flush.
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
@@ -960,6 +981,7 @@ fn make_repos(base: &Path, prefix: &str, count: usize) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Run `update` to completion on this thread and return its outcome.
 fn run_update(
     sys: LatchSys,
     cwd: &Path,
@@ -990,6 +1012,8 @@ fn spawn_update(
     std::thread::spawn(move || run_update(sys, &cwd, &args, writer))
 }
 
+/// Run `exec` on a spawned thread, so the test can drive the latch and the
+/// writer while the run is in flight.
 fn spawn_exec(
     sys: LatchSys,
     cwd: &Path,
@@ -1021,6 +1045,7 @@ fn one_path(base: &Path) -> UpdateArgs {
     }
 }
 
+/// The panic payload's message, when it carries one as text; empty otherwise.
 fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
     if let Some(text) = payload.downcast_ref::<String>() {
         return text.clone();
