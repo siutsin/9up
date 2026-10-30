@@ -62,13 +62,34 @@ struct RepoInfo {
     bare: bool,
 }
 
-/// Ask git where the repository lives. A bare one has no top level, so its work dir is the git dir.
+/// Ask git about the repository. The bare check comes first because its yes/no
+/// answer cannot be mangled the way a path answer can; a bare repository's work
+/// dir is the repository directory itself, so it needs no path answer at all.
 fn repo_info(sys: &dyn Sys, path: &Path) -> Option<RepoInfo> {
-    let git_dir = PathBuf::from(git_text(sys, path, &["rev-parse", "--absolute-git-dir"])?);
-    let top = git_text(sys, path, &["rev-parse", "--show-toplevel"]);
-    let bare = top.is_none();
-    let work_dir = top.map(PathBuf::from).unwrap_or_else(|| git_dir);
-    Some(RepoInfo { work_dir, bare })
+    if git_text(sys, path, &["rev-parse", "--is-bare-repository"])? == "true" {
+        return Some(RepoInfo {
+            work_dir: path.to_path_buf(),
+            bare: true,
+        });
+    }
+    let output = sys.git(path, &["rev-parse", "--show-toplevel"]).ok()?;
+    if !output.status.success() {
+        // No top level: the path is a git directory, which has no work tree and
+        // is handled in place, like a bare repository.
+        return Some(RepoInfo {
+            work_dir: path.to_path_buf(),
+            bare: true,
+        });
+    }
+    // A path answer holding the replacement character names nothing real.
+    let top = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if top.contains('\u{FFFD}') {
+        return None;
+    }
+    Some(RepoInfo {
+        work_dir: PathBuf::from(top),
+        bare: false,
+    })
 }
 
 struct Remote {
@@ -239,14 +260,13 @@ fn branch_step(
     bare: bool,
     steps: &mut Vec<Step>,
 ) {
+    // No patterns: an upstream can live outside refs/heads and refs/remotes.
     let Some(text) = git_text(
         sys,
         path,
         &[
             "for-each-ref",
             "--format=%(refname)%00%(objectname)%00%(upstream)",
-            "refs/heads",
-            "refs/remotes",
         ],
     ) else {
         return;

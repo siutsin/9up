@@ -10,13 +10,25 @@ pub(crate) const RED: &str = "\u{1b}[31m";
 const CYAN: &str = "\u{1b}[36m";
 const RESET: &str = "\u{1b}[0m";
 
+/// Replace control characters with spaces, so a name cannot inject escapes or forge lines.
+pub(crate) fn clean(text: &str) -> String {
+    text.chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
+}
+
 /// Colour text only when asked, so piped output stays free of escape codes.
 pub(crate) fn paint(enabled: bool, code: &str, text: &str) -> String {
+    let text = clean(text);
     if enabled {
         format!("{code}{text}{RESET}")
     } else {
-        text.to_owned()
+        text
     }
+}
+
+fn short(sha: &str) -> &str {
+    sha.get(..7).unwrap_or(sha)
 }
 
 /// Show each input as an absolute path with its repository count, clear whatever the user typed.
@@ -82,7 +94,7 @@ pub(crate) fn render_report(
                     writeln!(out, "    {}", paint(colour, CYAN, &line))?;
                 }
                 update::FetchOutcome::UpToDate => {
-                    writeln!(out, "    {remote} is up to date.")?;
+                    writeln!(out, "    {} is up to date.", clean(remote))?;
                 }
                 update::FetchOutcome::NoRefspec => {
                     red_line(
@@ -99,11 +111,11 @@ pub(crate) fn render_report(
             },
             update::Step::Branch { name, outcome } => match outcome {
                 update::BranchOutcome::Updated { from, to } => {
-                    let line = format!("{name} updated: {}..{}", &from[..7], &to[..7]);
+                    let line = format!("{name} updated: {}..{}", short(from), short(to));
                     writeln!(out, "    {}", paint(colour, CYAN, &line))?;
                 }
                 update::BranchOutcome::UpToDate => {
-                    writeln!(out, "    {name} is up to date.")?;
+                    writeln!(out, "    {} is up to date.", clean(name))?;
                 }
                 update::BranchOutcome::Skipped(reason) => {
                     red_line(out, colour, &format!("{name} skipped: {reason}."))?;

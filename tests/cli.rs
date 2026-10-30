@@ -47,8 +47,9 @@ fn run_from_deleted_cwd(dir: &Path, suffix: &str) -> Output {
     fs::create_dir(&gone).unwrap();
     let config = dir.join("config.toml");
     fs::write(&config, "repositories = [\"/srv/repos\"]\n").unwrap();
+    // Paths are single-quoted: a TMPDIR with spaces must not split the script.
     let script = format!(
-        "cd {} && rmdir {} && exec {} -C {} {suffix}",
+        "cd '{}' && rmdir '{}' && exec '{}' -C '{}' {suffix}",
         gone.display(),
         gone.display(),
         env!("CARGO_BIN_EXE_9up"),
@@ -406,6 +407,89 @@ fn a_bare_repository_updates_its_head_branch() {
     let text = stdout(&out);
     assert!(text.contains("main updated:"), "{text}");
     assert_eq!(sha(&bare, "main"), sha(&bare, "refs/remotes/origin/main"));
+}
+
+/// Guards a bare repository under a non-UTF-8 name; git's path answers come back
+/// mangled for it, but the bare check is a yes/no, so the head branch still updates.
+#[cfg(unix)]
+#[test]
+fn a_bare_repository_under_a_non_utf8_name_updates() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    let (remote, work, _stale) = remote_work_stale(dir.path());
+
+    let parent = dir.path().join("parent");
+    fs::create_dir(&parent).unwrap();
+    // The git helper takes text arguments, so the repo is made under an ASCII
+    // name and renamed to the non-UTF-8 one.
+    let ascii = parent.join("bare.git");
+    git(
+        dir.path(),
+        &[
+            "init",
+            "-q",
+            "-b",
+            "main",
+            "--bare",
+            ascii.to_str().unwrap(),
+        ],
+    );
+    let bare = parent.join(std::ffi::OsStr::from_bytes(b"bare-\xff.git"));
+    fs::rename(&ascii, &bare).unwrap();
+    git(
+        &bare,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&bare, &["fetch", "-q", "origin"]);
+    git(&bare, &["branch", "main", "refs/remotes/origin/main"]);
+    git(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+
+    commit_file(&work, "b");
+    git(&work, &["push", "-q", "origin", "main"]);
+
+    let out = nine_up_ok(dir.path(), &["update", parent.to_str().unwrap()]);
+    let text = stdout(&out);
+    assert!(text.contains("main updated:"), "{text}");
+    assert_eq!(sha(&bare, "main"), sha(&bare, "refs/remotes/origin/main"));
+}
+
+/// Guards `exec` on a `.git` directory itself; it has no work tree, so the
+/// command runs in the git directory.
+#[test]
+fn exec_runs_in_a_git_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    make_repo(&repo);
+    let git_dir = repo.join(".git");
+    let out = nine_up_ok(
+        dir.path(),
+        &["exec", git_dir.to_str().unwrap(), "--", "sh", "-c", "pwd"],
+    );
+    let text = stdout(&out);
+    assert!(
+        text.lines()
+            .any(|line| line.trim().starts_with('/') && line.trim_end().ends_with(".git")),
+        "{text}"
+    );
+}
+
+/// Guards an update named by its `.git` directory; with no work tree there, the
+/// branch is handled like a bare repository's, so git's own refusal to force a
+/// checked-out branch surfaces instead of a merge attempt in the git directory.
+#[test]
+fn update_through_a_git_directory_uses_the_bare_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_remote, work, stale) = remote_work_stale(dir.path());
+    let behind = sha(&stale, "main");
+    commit_file(&work, "b");
+    git(&work, &["push", "-q", "origin", "main"]);
+
+    let git_dir = stale.join(".git");
+    let out = nine_up_ok(dir.path(), &["update", git_dir.to_str().unwrap()]);
+    let text = stdout(&out);
+    assert!(text.contains("cannot force update"), "{text}");
+    assert!(!text.contains("merge failed"), "{text}");
+    assert_eq!(sha(&stale, "main"), behind);
 }
 
 /// Guards a branch tracking a local branch; it must follow that branch after it moves.
@@ -1082,8 +1166,9 @@ fn a_broken_pipe_during_list_still_exits_successfully() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    // Read only the banner, then close the pipe. The listing is far larger than the
-    // pipe holds, so the child is still writing when the read end goes away.
+    // Read only the banner, then close the pipe. The 5,000 entries list at roughly
+    // 125 KB, well over the 64 KiB a pipe buffers, so the child is still writing
+    // when the read end goes away.
     let mut pipe = child.stdout.take().unwrap();
     let mut banner = [0_u8; 5];
     std::io::Read::read_exact(&mut pipe, &mut banner).unwrap();

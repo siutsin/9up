@@ -1,6 +1,7 @@
 # 9up Plan
 
 Status: the reference for a Rust CLI inspired by `gitup` 0.5.2. The implementation follows it.
+Milestone 1 is complete; milestone 2 is not started.
 
 9up is a new tool, not a port. It does the jobs `gitup` (the Python `git-repo-updater` by Ben Kurtovic) does, in
 the same broad shape, because that shape works. Feature parity is the goal: the same jobs. Its state is its
@@ -42,7 +43,7 @@ Subcommands, the idiomatic clap shape. One verb per run.
 | `9up clean` | Remove configured paths that no longer exist. |
 | `9up exec [paths...] -- <command...>` | Run the command in each repository under the paths, or in the configured repositories when no path is given. Everything after `--` is the command and its arguments, as the shell split them. Takes `--depth`, with the same meaning as on `update`. |
 
-A path named like a command (`list`, `clean`, `add`, `delete`, `exec`, `update`) cannot use the bare form.
+A path named like a command (`list`, `clean`, `add`, `delete`, `exec`, `update`, `help`) cannot use the bare form.
 Spell it out instead: `9up update list`, or `9up ./list`.
 
 The `update` options:
@@ -78,10 +79,11 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
    - An existing path that is not a directory prints an "isn't a repository" error. So does a directory when
      the depth is 0.
    - Any other directory is searched. The search follows symbolic links to directories and enters hidden
-     directories. It skips a directory it cannot read, and a symbolic-link cycle ends that branch of the search
-     (`walkdir` reports the loop as an error entry).
+     directories. It never descends into a directory named `.git`. It skips a directory it cannot read,
+     and a symbolic-link cycle ends that branch of the search (`walkdir` reports the loop as an error entry).
    - Depth: the path itself is depth 0. A repository directly below the path is depth 1. Depth `d` finds
-     repositories down to `d` levels below the path. The search does not descend into a repository it found.
+     repositories down to `d` levels below the path. For a glob path, depth counts from the pattern's
+     non-glob prefix, so a match consumes the levels above it. The search does not descend into a repository it found.
    - A repository the search reaches under more than one spelling — a symbolic-link alias, or overlapping
      glob matches — is reported once, under the first spelling reached. The search compares canonical
      paths to spot the repeat. A directory that is not a repository, first met exactly at the depth limit
@@ -100,6 +102,9 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
      checks run in this order: with `--current-only`, a detached HEAD; then with `--current-only`, no tracked
      remote; then no remotes at all. Before all of them, a `git config` call that cannot run at all — git
      fails to start, or the call errors — is a repository error: a failed git is never reported as no remotes.
+     One case is not an error: with `--current-only`, when the branch's configured remote is not among the
+     repository's remotes while others exist, the remote prints the fetch skip line below and the branch
+     step still runs.
    - Fetch each picked remote in configuration order, and report what the fetch brought in: new branches,
      new tags, updated references, or up to date. A remote with no reference lines in its configuration
      prints a skip line for that remote.
@@ -154,6 +159,10 @@ green for a repository name, red for an error or a skip, cyan for new or updated
 colour for up-to-date lines. Standard output that is not a terminal gets no colour codes. Standard error never
 gets colour codes.
 
+Names, comment text and stored entries print with control characters replaced by spaces, so text read
+from disk or from git cannot inject terminal escapes or forge lines. A command's own output under `exec`
+is the exception: it passes through as the command printed it.
+
 ### Config File
 
 9up keeps its state in one TOML file of its own; `gitup`'s bookmark file is not read. The document holds one
@@ -165,14 +174,14 @@ unset or empty, on every platform, macOS included (`main` reads the variable, no
 directory is `~/Library/Application Support`, which the owner chose not to use). A relative value is ignored,
 as the XDG specification requires, with a warning on stderr; an empty value is simply unset.
 A non-UTF-8 absolute `XDG_CONFIG_HOME` is accepted. `-C ""` also uses the default path.
-With no home directory at all, the fallback is a relative `.config/9up/config.toml` path.
+With neither an absolute `XDG_CONFIG_HOME` nor a home directory, the fallback is a relative `.config/9up/config.toml` path.
 
 - Read: parse the file as TOML (the `toml_edit` crate). A missing or unreadable file means no repositories.
   A file that is not valid TOML, a file whose content is not valid UTF-8, or a `repositories` value that
   is not an array of strings, cannot be parsed: the run prints an error to standard error and exits 1. A
   missing `repositories` key means no repositories.
 - Write: edit the parsed document in place and save it, so comments and any other keys stay as they are;
-  only the `repositories` array changes. A write creates the parent directory. When the file does not
+  only the `repositories` array changes. Line endings normalise to LF on a save. A write creates the parent directory. When the file does not
   exist, the new document is the one key, with each entry on its own line. A comment is removed with
   the entry it belongs to; comments on kept entries, and comments in the array's trailing text after
   the last entry's comma, survive a save. One formatting exception: when the last entry carries a
@@ -186,7 +195,8 @@ With no home directory at all, the fallback is a relative `.config/9up/config.to
   that names the file: `cannot read <path>: ...` or `cannot write <path>: ...`.
 - A path is stored as its absolute form, normalised without a filesystem access: duplicate separators
   collapse, `.` parts drop, `..` parts resolve against the parts before them, and a trailing separator
-  drops. A leading `~` (alone or as `~/`) keeps it, and the path is only normalised lexically. An empty
+  drops. A leading `~` (alone or as `~/`) keeps it, and the path is only normalised lexically. The same
+  directory stored under two spellings, a `~` form and the absolute form it expands to, is two entries. An empty
   path becomes the current directory.
 - A relative `add` value resolves against the current directory first. An added path does not need to
   exist.
@@ -196,18 +206,20 @@ With no home directory at all, the fallback is a relative `.config/9up/config.to
   first match. Delete reports each path as deleted or not present. Delete writes only when it removes an
   entry, so it does not write when there are no repositories or when no argument matches.
 - List prints the entries as stored, or a note when there are none.
-- `clean` removes an entry when it is not a directory and its glob has no match. A comment entry (see
+- `clean` removes an entry when it is not on disk and its glob has no match; a path on disk counts as
+  itself, so a bracket in a real file name is not read as a pattern. A comment entry (see
   Behaviour item 2) is never removed. `clean` writes only when it removes an entry. When it removes
-  nothing, it prints a note that says so.
+  nothing, it prints a note that says so. An empty config prints the same "No repositories configured."
+  note as `list`.
 
 ### Differences From gitup
 
 Feature parity allows these differences. The Feature Spec above is the whole contract: where it is silent,
 the implementer chooses, and `gitup` is a guide, not a rule.
 
-Where Python crashed or printed a traceback, 9up prints an error line instead: an unconfigured
-`--current-only` remote, a failed `git branch -f`, a command that cannot start, and a failed config
-write (which also exits 1).
+Where Python crashed or printed a traceback, 9up prints a line and carries on: an unconfigured
+`--current-only` remote gets the fetch skip line; a failed `git branch -f`, a command that cannot
+start, and a failed config write (which also exits 1) get error lines.
 
 | Difference | Reason |
 | --- | --- |
@@ -265,13 +277,13 @@ cap is not covered: like `Command::output()`, the call waits for that stream to 
 | Need | Command |
 | --- | --- |
 | Detect a repository (in `discover.rs`, no git call) | A filesystem test only. A git directory has a `HEAD` file and `objects` and `refs` directories. A linked worktree's admin directory has no `objects`: it holds a `commondir` file instead, and that also counts. A path is a repository when it is a git directory, when its `.git` entry is one, or when its `.git` file's `gitdir:` target is one. A relative `gitdir:` target resolves against the `.git` file's directory. |
-| Working directory and git directory | `git rev-parse --absolute-git-dir` and `git rev-parse --show-toplevel`, run in the repository by `update.rs`. A bare repository has no top level, so its working directory is the git directory. Let git answer these questions. Do not resolve `commondir` files or `core.worktree` by hand. |
+| Working directory and bareness | `git rev-parse --is-bare-repository` and `git rev-parse --show-toplevel`, run in the repository by `update.rs`. The bare check is a yes/no answer, so it stays readable where a path answer would not. A bare repository's working directory is the repository directory itself. A path that is itself a git directory has no top level either — the top-level call fails there — and it is handled the same way, in place. Let git answer these questions. Do not resolve `commondir` files or `core.worktree` by hand. |
 | Fetch | `git fetch --porcelain [--prune] -- <remote>`, one call per remote, with `--prune` added when `--prune` is set. Never `--quiet`: it silences the porcelain lines too (probed against git 2.51). The porcelain lines classify by the local reference name: a line with the `*` flag is a new reference, and a line that shows an old and a new value is an update. Lines with the flags `+`, `-`, `t`, `!` or `=` are not reported. A reported name comes from the local reference: strip `refs/remotes/<remote>/` from the front, else drop the first two path parts (which strips `refs/tags/` or `refs/heads/`). A reference with fewer than three parts keeps its full name. |
 | Remotes, URLs and reference lines | One call per repository: `git config --get-regexp ^remote\.`, parsed in memory. It gives each remote's name, URL and `fetch` lines, in configuration order. A remote with no `fetch` lines prints the fetch skip line. |
 | Current branch | `git symbolic-ref -q HEAD`, then strip the `refs/heads/` prefix. A failure means a detached HEAD. Never use `--short`, which prints `heads/main` when a tag `main` exists. |
 | The current-only remote | `git config --get branch.<branch>.remote` and `git config --get branch.<branch>.merge`. Both must be set. Configuration works on an unborn branch, where `for-each-ref` lists nothing. `git config` matches the key as a pattern, so a branch name with pattern characters (a dot, say) can collide with a sibling key; accepted, as this is git's own lookup shape. |
-| Branch snapshot | One call after the fetch: `git for-each-ref --format=%(refname)%00%(objectname)%00%(upstream) refs/heads refs/remotes`. The branch step reads upstreams and SHAs from this snapshot. After each successful `merge` or `branch -f`, set that branch's snapshot SHA to its upstream SHA, so a branch that tracks a local branch sees the move made earlier in the loop. |
-| Update the current branch | `git merge --ff-only <upstream full ref>`. |
+| Branch snapshot | One call after the fetch: `git for-each-ref --format=%(refname)%00%(objectname)%00%(upstream)` over all references, so an upstream outside `refs/heads` and `refs/remotes` still resolves. The branch step reads upstreams and SHAs from this snapshot. After each successful `merge` or `branch -f`, set that branch's snapshot SHA to its upstream SHA, so a branch that tracks a local branch sees the move made earlier in the loop. |
+| Update the current branch | `git merge --ff-only -- <upstream full ref>`. |
 | Update any other branch | `git branch -f -- <branch> <upstream full ref>`. |
 | Ancestor test | `git merge-base <branch SHA> <upstream SHA>`, from the snapshot. Exit 1 means no merge base. A base equal to the upstream SHA means up to date. A base equal to the branch SHA means a fast-forward is possible. |
 
@@ -305,7 +317,8 @@ crate for the exec command (the shell already split it).
 - Derive API. `Cli` is a `Parser` struct with the global config option and an optional subcommand.
   The commands are a `Subcommand` enum: `Update`, `Add`, `Delete`, `List`, `Clean`, `Exec`.
 - The bare form is an argv shim in `cli.rs`: when the first positional argument is not a command name,
-  `update` is inserted after the program name before clap parses. A flattened update struct cannot do
+  `update` is inserted after the program name before clap parses. A path after `--` counts as a path,
+  and update options with no path at all (`9up -p`) also trigger the insertion. A flattened update struct cannot do
   this, because its path list swallows the command name as a path.
 - The binary name comes from `#[command(name = "9up")]`, because the package name is `nine-up`. Help and
   version use clap's built-in flags, so `--version` prints `9up <version>` from the name alone.
@@ -334,7 +347,9 @@ Eight modules in `src/`, one crate, no `lib.rs`. The architecture is a compositi
 direction, 26 Oct 2026): `main` builds one `App` context in `sys.rs` — the `Sys` services, the working
 directory, the home directory, the config file,
 the colour flag and the output — and passes it down.
-Nothing below `main` reads the environment, reads the home directory, or builds a service. Path probes (metadata,
+Nothing below `main` reads the environment, reads the home directory, or builds a service. One stated
+exception: `RealSys::git` reads the inherited variable names, so the `GIT_CONFIG_KEY_*` and
+`GIT_CONFIG_VALUE_*` sweep can remove them (see Git Backend). Path probes (metadata,
 the `.git` layout, the `walkdir` search) work on path values and need no service.
 
 | File | Contents |
@@ -344,15 +359,16 @@ the `.git` layout, the `walkdir` search) work on path values and need no service
 | `commands.rs` | The add, delete, list, clean, update and exec flows, and the repository walk they share. Writes through the `App` output. |
 | `render.rs` | `paint`, the path headers, and rendering of every report. |
 | `sys.rs` | The `App` context, the `Sys` trait (git, exec, file read/write) and `RealSys`. Tests substitute a stub `Sys` to force failures. |
-| `config.rs` | The config file's entries, plus `load`, `save`, `normalize`, `has`. No output. |
+| `config.rs` | The config file's entries, plus `load`, `save`, `normalize`. No output. |
 | `discover.rs` | `expand_home`, `glob_paths`, `resolve` and the depth-limited search. No `git` calls. |
 | `update.rs` | `repo_info`, `update_repo`, `exec_repo`, all over the `Sys` seam. No output. |
 
 A `Report` carries data only. Milestone 2 needs no type change: run `update_repo` on many threads, collect the
 `Report` values, render in order.
 
-Each module's unit tests sit in `src/<module>/tests.rs`, a child module declared with `#[cfg(test)] mod tests;`.
-It is `pub(crate)` in `render` and `discover`, which share test helpers.
+Unit tests sit in `src/<module>/tests.rs`, a child module declared with `#[cfg(test)] mod tests;`, for
+every module except `main.rs`, which has none.
+The tests module is `pub(crate)` in `render` and `discover`, which share test helpers.
 
 ## Tests
 

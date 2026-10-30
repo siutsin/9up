@@ -44,10 +44,15 @@ pub fn glob_paths(pattern: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The one definition of "exists" for an expanded entry: a directory, or a glob with a match.
-/// The glob also covers plain files and broken symbolic links, which `is_dir` alone misses.
+/// The one definition of "exists" for an expanded entry: a path on disk, or a glob
+/// with a match. A path on disk counts as itself first, so a literal bracket in a
+/// name is not read as a pattern while the file is there.
 pub fn path_is_live(expanded: &Path) -> bool {
-    expanded.is_dir() || !glob_paths(&expanded.display().to_string()).is_empty()
+    if expanded.symlink_metadata().is_ok() {
+        return true;
+    }
+    let text = expanded.display().to_string();
+    text.chars().any(|c| matches!(c, '*' | '?' | '[')) && !glob_paths(&text).is_empty()
 }
 
 /// Resolve a command-line or configured path to its repositories, a comment, or a path error.
@@ -78,7 +83,11 @@ pub fn resolve(input: &str, cwd: &Path, home: Option<&Path>, depth: i32) -> Reso
             repos.sort_by(|a, b| a.name.cmp(&b.name));
             Resolved::Repos(repos)
         }
-        Err(_) => {
+        Err(err) => {
+            // Only a missing path can be a comment or a glob; any other failure is the error itself.
+            if err.kind() != std::io::ErrorKind::NotFound {
+                return Resolved::PathError(format!("{display}: {err}"));
+            }
             if let Some(comment) = comment_text(input) {
                 return Resolved::Comment(comment);
             }
@@ -104,7 +113,16 @@ pub fn resolve(input: &str, cwd: &Path, home: Option<&Path>, depth: i32) -> Reso
             };
             let mut repos = Vec::new();
             for matched in &matches {
-                repos.extend(search(matched, depth, &prefix));
+                // Depth counts from the prefix, so a match below it spends that part of the
+                // budget; a negative depth is unlimited, so it never skips and stays negative.
+                let relative = matched
+                    .strip_prefix(&prefix)
+                    .map(|rest| rest.components().count() as i32)
+                    .unwrap_or(0);
+                if depth >= 0 && relative > depth {
+                    continue;
+                }
+                repos.extend(search(matched, depth - relative, &prefix));
             }
             // `**` matches a parent directory and the repository below it, so a path can repeat.
             let mut seen = std::collections::HashSet::new();
@@ -173,6 +191,10 @@ fn search(dir: &Path, depth: i32, header: &Path) -> Vec<Repo> {
             name: name_for(dir, header),
             path: dir.to_path_buf(),
         }];
+    }
+    if depth == 0 {
+        // The walk still yields the first level when its minimum depth passes 0, so stop here.
+        return Vec::new();
     }
     // A negative depth becomes the unlimited case.
     let max_depth = depth.try_into().unwrap_or(usize::MAX);

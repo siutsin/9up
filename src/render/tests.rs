@@ -55,10 +55,53 @@ fn print_header_reports_a_failed_write() {
 }
 
 /// Guards that disabled colour adds nothing; piped output carries no escape codes.
+/// The codes are literal here, so a wrong constant value cannot pass against itself.
 #[test]
 fn paint_wraps_the_text_in_the_codes_when_enabled() {
-    assert_eq!(paint(true, RED, "x"), format!("{RED}x{RESET}"));
+    assert_eq!(paint(true, BOLD_WHITE, "x"), "\u{1b}[1;37mx\u{1b}[0m");
+    assert_eq!(paint(true, BOLD_GREEN, "x"), "\u{1b}[1;32mx\u{1b}[0m");
+    assert_eq!(paint(true, RED, "x"), "\u{1b}[31mx\u{1b}[0m");
+    assert_eq!(paint(true, CYAN, "x"), "\u{1b}[36mx\u{1b}[0m");
     assert_eq!(paint(false, RED, "x"), "x");
+}
+
+/// Guards short SHAs; a slice at byte 7 would panic on a short value or split a character.
+#[test]
+fn short_prints_short_and_multibyte_shas_whole() {
+    assert_eq!(short("123456789"), "1234567");
+    assert_eq!(short("abc"), "abc");
+    // The emoji starts at byte 6, so byte 7 falls inside it.
+    assert_eq!(short("123456\u{1F600}89"), "123456\u{1F600}89");
+}
+
+/// Guards against escape injection; a name holding ESC or a newline must not
+/// inject its own codes or forge an extra line.
+#[test]
+fn render_report_cleans_control_characters_in_names() {
+    let report = update::Report {
+        name: "evil\u{1b}[31mRED\nforged".to_owned(),
+        steps: vec![
+            update::Step::Fetch {
+                remote: "or\u{1b}igin\nfake".to_owned(),
+                outcome: update::FetchOutcome::UpToDate,
+            },
+            update::Step::Branch {
+                name: "br\u{1b}[31mRED\nforged".to_owned(),
+                outcome: update::BranchOutcome::UpToDate,
+            },
+        ],
+    };
+    let mut out: Vec<u8> = Vec::new();
+    render_report(&report, false, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.contains("\u{1b}[31mRED"), "{text:?}");
+    assert_eq!(text.lines().count(), 3, "{text:?}");
+    assert!(text.contains("evil [31mRED forged"), "{text:?}");
+    assert!(text.contains("or igin fake is up to date."), "{text:?}");
+    assert!(
+        text.contains("br [31mRED forged is up to date."),
+        "{text:?}"
+    );
 }
 
 /// Guards the wording of the fetch, branch and error lines; users read them every run.

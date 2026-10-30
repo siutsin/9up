@@ -43,8 +43,13 @@ pub fn save(sys: &dyn Sys, path: &Path, entries: &[String]) -> io::Result<()> {
             ));
         }
     };
-    match doc.get_mut("repositories").and_then(Item::as_array_mut) {
-        Some(array) => sync_array(array, entries),
+    match doc.get_mut("repositories") {
+        Some(item) => {
+            let Some(array) = item.as_array_mut() else {
+                return Err(not_strings(path));
+            };
+            sync_array(array, entries);
+        }
         None => doc["repositories"] = Item::Value(Value::Array(repositories_array(entries))),
     }
     let mut text = doc.to_string();
@@ -145,7 +150,6 @@ fn sync_array(array: &mut Array, entries: &[String]) {
     }
 }
 
-/// The raw text a value's decor holds before it.
 fn prefix_of(value: &Value) -> &str {
     value
         .decor()
@@ -154,7 +158,6 @@ fn prefix_of(value: &Value) -> &str {
         .unwrap_or_default()
 }
 
-/// The raw text a value's decor holds after it.
 fn suffix_of(value: &Value) -> &str {
     value
         .decor()
@@ -163,7 +166,6 @@ fn suffix_of(value: &Value) -> &str {
         .unwrap_or_default()
 }
 
-/// The first line of a raw text, when it holds a comment.
 fn line_comment(text: &str) -> Option<String> {
     let line = match text.find('\n') {
         Some(index) => &text[..index],

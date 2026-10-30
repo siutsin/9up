@@ -2,7 +2,9 @@ use std::io;
 use std::process::ExitCode;
 
 use crate::cli::UpdateArgs;
-use crate::render::{BOLD_GREEN, RED, paint, print_header, red_line, render_report};
+use crate::render::{
+    BOLD_GREEN, RED, clean as cleaned, paint, print_header, red_line, render_report,
+};
 use crate::sys::App;
 use crate::{config, discover, update};
 
@@ -13,10 +15,11 @@ pub(crate) fn add(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
     let mut lines = String::new();
     for raw in paths {
         let normalized = config::normalize(raw, &app.cwd);
+        let shown = cleaned(&normalized);
         if entries.contains(&normalized) {
-            lines.push_str(&format!("{normalized} is already in the config file.\n"));
+            lines.push_str(&format!("{shown} is already in the config file.\n"));
         } else {
-            lines.push_str(&format!("Added {normalized}.\n"));
+            lines.push_str(&format!("Added {shown}.\n"));
             entries.push(normalized);
         }
     }
@@ -32,12 +35,13 @@ pub(crate) fn delete(app: &mut App, paths: &[String]) -> io::Result<ExitCode> {
     let mut changed = false;
     for raw in paths {
         let normalized = config::normalize(raw, &app.cwd);
+        let shown = cleaned(&normalized);
         if let Some(index) = entries.iter().position(|entry| entry == &normalized) {
             entries.remove(index);
             changed = true;
-            lines.push_str(&format!("Deleted {normalized}.\n"));
+            lines.push_str(&format!("Deleted {shown}.\n"));
         } else {
-            lines.push_str(&format!("{normalized} is not in the config file.\n"));
+            lines.push_str(&format!("{shown} is not in the config file.\n"));
         }
     }
     if changed {
@@ -55,7 +59,7 @@ pub(crate) fn list(app: &mut App) -> io::Result<ExitCode> {
         writeln!(out, "No repositories configured.")?;
     }
     for entry in &entries {
-        writeln!(out, "{entry}")?;
+        writeln!(out, "{}", cleaned(entry))?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -109,7 +113,7 @@ pub(crate) fn clean(app: &mut App) -> io::Result<ExitCode> {
             kept.push(entry.clone());
         } else {
             removed = true;
-            lines.push_str(&format!("Removed {entry}.\n"));
+            lines.push_str(&format!("Removed {}.\n", cleaned(entry)));
         }
     }
     if removed {
@@ -175,7 +179,7 @@ fn for_each_repo(
             }
             discover::Resolved::Comment(text) => {
                 if !text.is_empty() {
-                    writeln!(&mut *app.out, "{text}")?;
+                    writeln!(&mut *app.out, "{}", cleaned(&text))?;
                 }
             }
             discover::Resolved::PathError(message) => {

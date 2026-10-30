@@ -346,6 +346,44 @@ fn a_glob_finds_repositories() {
     );
 }
 
+/// Guards that a glob match spends depth on its distance from the static prefix.
+#[test]
+fn a_glob_match_spends_depth_from_the_static_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("base/group/repo");
+    fs::create_dir_all(&repo).unwrap();
+    fake_repo(&repo);
+    let base = dir.path().join("base");
+    let base = base.to_str().unwrap();
+    let pattern = format!("{base}/*");
+    assert!(resolved_names(&resolve(&pattern, dir.path(), None, 1)).is_empty());
+    assert_eq!(
+        resolved_names(&resolve(&pattern, dir.path(), None, 2)),
+        ["group/repo"]
+    );
+    // A match past the depth limit is skipped, not searched with the full budget.
+    let deep_pattern = format!("{base}/*/*");
+    assert!(resolved_names(&resolve(&deep_pattern, dir.path(), None, 1)).is_empty());
+    assert_eq!(
+        resolved_names(&resolve(&deep_pattern, dir.path(), None, 2)),
+        ["group/repo"]
+    );
+}
+
+/// Guards that a path under a regular file reports its OS error, not "doesn't exist":
+/// the metadata call fails with ENOTDIR, not NotFound.
+#[test]
+fn a_path_under_a_regular_file_reports_the_os_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("file");
+    fs::write(&file, "x").unwrap();
+    let bad = file.join("child");
+    let resolved = resolve(bad.to_str().unwrap(), dir.path(), None, 3);
+    let message = expect_path_error(&resolved);
+    assert!(!message.contains("doesn't exist"), "{message}");
+    assert!(message.contains(&bad.display().to_string()), "{message}");
+}
+
 /// Guards the one definition of exists: directories, files and broken links all count.
 #[test]
 fn path_is_live_covers_directories_files_and_broken_links() {
@@ -362,4 +400,24 @@ fn path_is_live_covers_directories_files_and_broken_links() {
         std::os::unix::fs::symlink(root.join("gone"), &link).unwrap();
         assert!(path_is_live(&link));
     }
+}
+
+/// Guards that a literal name with brackets is not read as a glob: the file `a[1]`
+/// exists, but the pattern `a[1]` matches only `a1`, so globbing would judge it dead.
+#[test]
+fn path_is_live_treats_a_bracket_name_literally() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a[1]");
+    fs::write(&file, "").unwrap();
+    assert!(path_is_live(&file));
+    assert!(!path_is_live(&dir.path().join("b[2]")));
+}
+
+/// Guards that a glob path is live only when it has a match.
+#[test]
+fn path_is_live_glob_needs_a_match() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("file.txt"), "").unwrap();
+    assert!(path_is_live(&dir.path().join("fil*")));
+    assert!(!path_is_live(&dir.path().join("nomatch*")));
 }
