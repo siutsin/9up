@@ -1,7 +1,8 @@
 # 9up Plan
 
 Status: the reference for a Rust CLI inspired by `gitup` 0.5.2. The implementation follows it.
-Milestone 1 is complete; milestone 2 is not started.
+Milestone 1, the feature set specified below, is complete. Milestone 2 is concurrency;
+its plan is the last section of this document. It is not started.
 
 9up is a new tool, not a port. It does the jobs `gitup` (the Python `git-repo-updater` by Ben Kurtovic) does, in
 the same broad shape, because that shape works. Feature parity is the goal: the same jobs. Its state is its
@@ -13,8 +14,6 @@ idiomatic Rust wins: where `gitup`'s shape and idiomatic Rust conflict, the plan
 | Item | Decision |
 | --- | --- |
 | Problem | Keep many local git repositories current without visiting each one. |
-| Milestone 1 | The same jobs as `gitup` 0.5.2: update repositories under given paths, update the repositories listed in its config file, manage that config file, and run a command in each repository. Runs sequentially. |
-| Milestone 2 | Concurrency. Not planned in detail here, and the architecture must not block it. |
 | Repository name | `9up` |
 | Cargo package name | `nine-up`. Cargo rejects a package name that starts with a digit. |
 | Binary name | `9up`. A binary file name can start with a digit. |
@@ -363,8 +362,8 @@ the `.git` layout, the `walkdir` search) work on path values and need no service
 | `discover.rs` | `expand_home`, `glob_paths`, `resolve` and the depth-limited search. No `git` calls. |
 | `update.rs` | `repo_info`, `update_repo`, `exec_repo`, all over the `Sys` seam. No output. |
 
-A `Report` carries data only. Milestone 2 needs no type change: run `update_repo` on many threads, collect the
-`Report` values, render in order.
+A `Report` carries data only, so a caller can collect the reports from many repositories and render
+them in order (see Milestone 2).
 
 Unit tests sit in `src/<module>/tests.rs`, a child module declared with `#[cfg(test)] mod tests;`, for
 every module except `main.rs`, which has none.
@@ -407,3 +406,32 @@ Behaviour tables, one row per case:
 
 The clippy configuration allows `unwrap` and `expect` in tests only. Test helper functions can use both,
 with the reason in the `clippy.toml` comment.
+
+## Milestone 2 — Concurrency
+
+Goal: an `update` (and, if it falls out naturally, an `exec`) run works on several repositories at
+once, so a long list of repositories takes the time of its slowest few, not the sum of all of them.
+The Feature Spec above does not change: same output, in the same order, with the same exit codes.
+Only the waiting changes.
+
+Shape:
+
+- Concurrency is across repositories, never inside one: a repository's remotes still fetch in
+  configuration order and its branches still process in dependency order.
+- `update_repo` and `exec_repo` already return data and write nothing, so worker threads produce
+  `Report` values and the front end renders them in today's order — path order, then repository
+  name order. No interleaved output, whatever order the work finishes in.
+- Threads come from the standard library (scoped threads) over the existing `Sys` seam; no new
+  dependency unless a measured need appears. The shared `Sys` must be `Sync`; `RealSys` holds no
+  mutable state, so this should be a bound, not a redesign.
+- Discovery stays sequential: it is filesystem walking, and the git work it feeds dominates the time.
+
+Decisions to settle when building it, with measurements:
+
+- The bound: how many repositories at once. Prefer a fixed default with no new option, unless a
+  many-repository fixture shows the default matters.
+- Whether `exec` parallelises in the same change or follows after.
+
+Acceptance: the behaviour tables above pass unchanged; a test with many repositories shows the
+rendered order identical to a sequential run; timings on a many-repository fixture show the win;
+the coverage gate is unchanged.
