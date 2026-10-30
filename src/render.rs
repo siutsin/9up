@@ -31,7 +31,7 @@ fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
-/// Show each input as an absolute path with its repository count, clear whatever the user typed.
+/// Show each input as an absolute path with its repository count.
 pub(crate) fn print_header(
     out: &mut dyn Write,
     colour: bool,

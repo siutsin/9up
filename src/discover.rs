@@ -14,7 +14,6 @@ pub enum Resolved {
     PathError(String),
 }
 
-/// Expand a leading `~` or `~/` to the home directory; with no home, return the path as given.
 pub fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
     let Some(home) = home else {
         return PathBuf::from(path);
@@ -43,9 +42,9 @@ pub fn glob_paths(pattern: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The one definition of "exists" for an expanded entry: a path on disk, or a glob
-/// with a match. A path on disk counts as itself first, so a literal bracket in a
-/// name is not read as a pattern while the file is there.
+/// The one definition of "exists" for an expanded entry: a path on disk counts as
+/// itself first, so a literal bracket in a name is not read as a pattern while the
+/// file is there; otherwise, a glob with a match.
 pub fn path_is_live(expanded: &Path) -> bool {
     if expanded.symlink_metadata().is_ok() {
         return true;
@@ -54,7 +53,6 @@ pub fn path_is_live(expanded: &Path) -> bool {
     text.chars().any(|c| matches!(c, '*' | '?' | '[')) && !glob_paths(&text).is_empty()
 }
 
-/// Resolve a command-line or configured path to its repositories, a comment, or a path error.
 pub fn resolve(input: &str, cwd: &Path, home: Option<&Path>, depth: i32) -> Resolved {
     if input.is_empty() {
         return Resolved::PathError("doesn't exist.".to_owned());
@@ -143,11 +141,9 @@ pub fn comment_text(input: &str) -> Option<String> {
     Some(text.to_owned())
 }
 
-/// A git directory: a HEAD file, a refs directory, and an objects
-/// directory or a commondir file (a linked worktree's admin directory).
 fn is_git_dir(dir: &Path) -> bool {
-    // A linked worktree's admin directory has HEAD and commondir but no refs (git creates none),
-    // so commondir suffices; a normal or bare one pairs refs with objects.
+    // A linked worktree's admin directory has HEAD and commondir but no refs, so
+    // commondir suffices; a normal or bare one pairs refs with objects.
     dir.join("HEAD").is_file()
         && (dir.join("commondir").is_file()
             || (dir.join("refs").is_dir() && dir.join("objects").is_dir()))
@@ -182,8 +178,6 @@ fn canonical_key(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Repositories at and below `dir`, down to `depth` levels (negative means no limit). Names are
-/// relative to `header`, except a repository at `dir` itself, which takes its last component.
 fn search(dir: &Path, depth: i32, header: &Path) -> Vec<Repo> {
     if is_repo(dir) {
         return vec![Repo {
@@ -195,7 +189,6 @@ fn search(dir: &Path, depth: i32, header: &Path) -> Vec<Repo> {
         // Depth 0 checks the path itself only, which was done above.
         return Vec::new();
     }
-    // A negative depth becomes the unlimited case.
     let max_depth = depth.try_into().unwrap_or(usize::MAX);
     let mut repos = Vec::new();
     // A link can reach a directory under a second name; walk each physical directory once,
@@ -205,8 +198,6 @@ fn search(dir: &Path, depth: i32, header: &Path) -> Vec<Repo> {
     repos
 }
 
-/// Walk the directories below `dir`, at most `depth_left` levels down,
-/// collecting the repositories among them into `repos`.
 fn walk(
     dir: &Path,
     depth_left: usize,
@@ -214,7 +205,6 @@ fn walk(
     visited: &mut std::collections::HashSet<PathBuf>,
     repos: &mut Vec<Repo>,
 ) {
-    // A directory that cannot be read is skipped, ending this branch.
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -230,8 +220,8 @@ fn walk(
             continue;
         }
         let key = canonical_key(&path);
-        // Every directory the walk descends into is in `visited`, so a link back to an
-        // ancestor — a cycle — is met here and ends that branch.
+        // Every directory the walk descends into is in `visited`, so a link back to
+        // an ancestor — a cycle — ends that branch here.
         if visited.contains(&key) {
             continue;
         }
@@ -261,7 +251,6 @@ fn name_for(repo: &Path, header: &Path) -> String {
     }
 }
 
-/// A path that is itself a repository is named by its last component, per the naming rule.
 fn last_component(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())

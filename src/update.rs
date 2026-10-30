@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::sys::Sys;
 
-/// Data only, so milestone 2 can collect reports from many threads and main render them by path.
+/// Data only, so workers on many threads return it and the front end renders it.
 pub struct Report {
     pub name: String,
     pub steps: Vec<Step>,
@@ -168,7 +168,6 @@ fn tracked_remote(sys: &dyn Sys, path: &Path, branch: &str) -> Option<String> {
     Some(remote)
 }
 
-/// A report holding only one repository error.
 fn failed(name: &str, message: &str) -> Report {
     Report {
         name: name.to_owned(),
@@ -245,7 +244,6 @@ pub fn update_repo(sys: &dyn Sys, path: &Path, name: &str, options: &Options) ->
     report
 }
 
-/// A snapshot branch: name, SHA and full upstream reference, empty when it has none.
 struct Branch {
     name: String,
     sha: String,
@@ -294,17 +292,17 @@ fn branch_step(
     for index in processing_order(&branches) {
         let branch = &branches[index];
         if branch.upstream.is_empty() {
-            continue; // No upstream: skipped silently.
+            continue;
         }
         let Some(upstream_sha) = shas
             .iter()
             .find(|(reference, _)| *reference == branch.upstream)
             .map(|(_, sha)| sha.clone())
         else {
-            continue; // The upstream reference is missing locally.
+            continue;
         };
         let Some(base) = git_text(sys, path, &["merge-base", &branch.sha, &upstream_sha]) else {
-            continue; // No merge base: skipped silently.
+            continue;
         };
         let name = branch.name.clone();
         let upstream_ref = branch.upstream.clone();
@@ -525,8 +523,8 @@ fn parse_fetch_output(text: &str, remote: &str) -> Vec<(Kind, Vec<String>)> {
     groups
 }
 
-/// One repository's exec result: raw stdout and stderr, or the error line if the command
-/// could not start. main splits the text into lines.
+/// One repository's exec result: raw stdout and stderr, or the error line if the
+/// command could not start.
 pub struct ExecReport {
     pub name: String,
     pub stdout: String,

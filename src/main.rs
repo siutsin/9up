@@ -29,9 +29,8 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         };
     }
-    // Every service and resolved value is built here and passed down in the context.
-    // `list` and `clean` never need the cwd (configured paths are
-    // absolute), so a deleted or unreadable cwd must not fail them.
+    // `list` and `clean` never need the cwd (configured paths are absolute), so a
+    // deleted or unreadable cwd must not fail them.
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
         Err(err) => match &cli.command {

@@ -576,11 +576,9 @@ fn exec_prints_a_repository_error() {
     assert!(text.contains("Could not read the repository."), "{text}");
 }
 
-// ---------------------------------------------------------------------------
-// Milestone 2 concurrency tests. A latch stub holds each repository's start
-// call until the test releases it, so overlap, ordering and the bound are
-// observed from the latch's records, never from elapsed time.
-// ---------------------------------------------------------------------------
+// Concurrency tests: a latch stub holds each repository's start call until the
+// test releases it, so overlap, ordering and the bound are observed from the
+// latch's records, never from elapsed time.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -676,7 +674,6 @@ impl Latch {
         }
     }
 
-    /// Register a repository's finish.
     fn finish(&self, dir: &Path) {
         let mut state = self.state.lock().unwrap();
         state.finished.insert(dir.to_path_buf());
@@ -732,7 +729,6 @@ impl Latch {
     }
 }
 
-/// A successful process result with the given stdout, for the latch stub.
 fn latch_output(stdout: &str) -> std::process::Output {
     std::process::Output {
         status: std::os::unix::process::ExitStatusExt::from_raw(0),
@@ -741,10 +737,9 @@ fn latch_output(stdout: &str) -> std::process::Output {
     }
 }
 
-/// A `Sys` that answers the latch fixtures' calls and holds each repository's
-/// start call on the latch. It is keyed by directory: `--show-toplevel`
-/// answers with the directory the call received, so each repository's work
-/// directory is the repository itself.
+/// A `Sys` that holds each repository's start call on the latch. Keyed by
+/// directory: `--show-toplevel` answers with the directory the call received,
+/// so each repository's work directory is the repository itself.
 struct LatchSys {
     latch: Arc<Latch>,
     mode: LatchMode,
@@ -821,9 +816,9 @@ impl crate::sys::Sys for LatchSys {
     }
 }
 
-/// A writer the run thread and the test thread share: it records every write
-/// attempt, can fail the write that completes a needle, and can hold one
-/// write open — running a hook first — until the test releases it.
+/// A writer shared by the run and test threads: it records every write attempt,
+/// can fail the write that completes a needle, and can hold one write open —
+/// running a hook first — until the test releases it.
 #[derive(Clone)]
 struct TestWriter {
     inner: Arc<WriterInner>,
@@ -893,7 +888,6 @@ impl TestWriter {
         String::from_utf8_lossy(&self.inner.state.lock().unwrap().attempts).contains(needle)
     }
 
-    /// Wait until the blocking write is being held open.
     fn wait_blocked(&self) {
         let mut state = self.inner.state.lock().unwrap();
         while !state.blocked {
@@ -966,7 +960,6 @@ fn make_repos(base: &Path, prefix: &str, count: usize) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Run `update` against a latch system on this thread.
 fn run_update(
     sys: LatchSys,
     cwd: &Path,
@@ -997,7 +990,6 @@ fn spawn_update(
     std::thread::spawn(move || run_update(sys, &cwd, &args, writer))
 }
 
-/// Run `exec` on a spawned thread, like `spawn_update`.
 fn spawn_exec(
     sys: LatchSys,
     cwd: &Path,
@@ -1029,7 +1021,6 @@ fn one_path(base: &Path) -> UpdateArgs {
     }
 }
 
-/// The text of a caught panic's payload.
 fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
     if let Some(text) = payload.downcast_ref::<String>() {
         return text.clone();

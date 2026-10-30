@@ -250,7 +250,7 @@ fn a_symbolic_link_cycle_terminates() {
     let repo = base.join("repo");
     fs::create_dir_all(&repo).unwrap();
     fake_repo(&repo);
-    // A repository reachable only via a symbolic link: without `follow_links(true)` it is missed.
+    // A repository reachable only via a symbolic link must still be found.
     let outside = dir.path().join("outside");
     fs::create_dir_all(&outside).unwrap();
     fake_repo(&outside);
