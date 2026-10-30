@@ -411,7 +411,9 @@ fn a_bare_repository_updates_its_head_branch() {
 
 /// Guards a bare repository under a non-UTF-8 name; git's path answers come back
 /// mangled for it, but the bare check is a yes/no, so the head branch still updates.
-#[cfg(unix)]
+/// Linux only: macOS filesystems refuse a rename to a non-UTF-8 name (EILSEQ),
+/// so the fixture cannot be built there.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_bare_repository_under_a_non_utf8_name_updates() {
     use std::os::unix::ffi::OsStrExt;
