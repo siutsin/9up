@@ -79,7 +79,7 @@ included: `gitup`'s `--selftest` (`cargo test` covers it) and its combined flag 
      the depth is 0.
    - Any other directory is searched. The search follows symbolic links to directories and enters hidden
      directories. It never descends into a directory named `.git`. It skips a directory it cannot read,
-     and a symbolic-link cycle ends that branch of the search (`walkdir` reports the loop as an error entry).
+     and a symbolic-link cycle ends that branch of the search (the walk never re-enters a directory: it keys them by canonical path).
    - Depth: the path itself is depth 0. A repository directly below the path is depth 1. Depth `d` finds
      repositories down to `d` levels below the path. For a glob path, depth counts from the pattern's
      non-glob prefix, so a match consumes the levels above it. The search does not descend into a repository it found.
@@ -230,7 +230,7 @@ start, and a failed config write (which also exits 1) get error lines.
 | The current branch's upstream comes from git's own `%(upstream)` value. | One source instead of a reconstruction. |
 | A `**` pattern in a configured path is recursive. | The `glob` crate's semantics. |
 | New references after a fetch are classified by the local reference name. | Clearer than the remote-side name. |
-| A symbolic-link cycle in the search ends that branch instead of looping. | `walkdir` detects the loop; `gitup` does not terminate on one. |
+| A symbolic-link cycle in the search ends that branch instead of looping. | The walk keys entered directories by canonical path, so a cycle ends; `gitup` does not terminate on one. |
 | In a bare repository, the HEAD branch updates like any other. | `gitup` skips it as "not possible to fast-forward" and leaves it stale (probed against 0.5.2); `git branch -f` on a bare HEAD branch works, so the update is safe. |
 | A fetch does not recurse into submodules. | One less flag until a user needs it. |
 | `$VAR` never expands, in any path. | The expansion was a side effect, not a feature. |
@@ -291,7 +291,7 @@ otherwise.
 
 ### Dependencies
 
-Four crates, plus one for tests. The standard library covers the rest.
+Three crates, plus one for tests. The standard library covers the rest.
 Every version is pinned exactly (`=` in `Cargo.toml`), so each update arrives as a Renovate pull request
 instead of drifting inside a range. A bump that changes a behaviour this plan states gets a plan update
 in the same pull request.
@@ -300,13 +300,14 @@ in the same pull request.
 | --- | --- |
 | `clap` (derive feature) | Parse the command line: a `Parser` struct with a `Subcommand` enum. |
 | `glob` | Expand the glob patterns that a configured path can contain, with `require_literal_leading_dot` set, as Python skipped dot entries. |
-| `walkdir` | The depth-limited directory search in `discover.rs`: symbolic links followed, loop detection. Order comes from `repos.sort_by(name)` in `resolve()`, not from `WalkDir`, which is unsorted. |
 | `toml_edit` | The config file: parse the TOML document and edit it in place, changing only the `repositories` array. |
 | `tempfile` (development only) | Temporary directories in integration tests. |
 
 What the standard library covers here: the colour constants (a few string constants, written by hand), the
 error type (`io::Error` and `io::Result`), the lexical path normalisation (a short function over path
-parts), and the child process (`std::process::Command`).
+parts), the child process (`std::process::Command`), and the directory search (a recursive
+`fs::read_dir` walk in `discover.rs`; order comes from `repos.sort_by(name)` in `resolve()`, not from
+the walk, which is unsorted).
 
 Not added: a colour crate, an error-type crate, a test-framework crate, a splitting
 crate for the exec command (the shell already split it).
@@ -349,7 +350,7 @@ the colour flag and the output — and passes it down.
 Nothing below `main` reads the environment, reads the home directory, or builds a service. One stated
 exception: `RealSys::git` reads the inherited variable names, so the `GIT_CONFIG_KEY_*` and
 `GIT_CONFIG_VALUE_*` sweep can remove them (see Git Backend). Path probes (metadata,
-the `.git` layout, the `walkdir` search) work on path values and need no service.
+the `.git` layout, the directory search) work on path values and need no service.
 
 | File | Contents |
 | --- | --- |

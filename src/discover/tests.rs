@@ -196,6 +196,21 @@ fn search_skips_files_and_git_directories_and_names_the_root() {
     assert_eq!(found[0].name, "repo");
 }
 
+/// Guards that a broken symbolic link inside a searched directory is skipped, and the
+/// repositories beside it are still found.
+#[cfg(unix)]
+#[test]
+fn a_broken_link_inside_a_searched_directory_is_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base");
+    let repo = base.join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    fake_repo(&repo);
+    std::os::unix::fs::symlink(dir.path().join("missing"), base.join("dangling")).unwrap();
+    let resolved = resolve(base.to_str().unwrap(), dir.path(), None, 3);
+    assert_eq!(resolved_names(&resolved), ["repo"]);
+}
+
 /// Guards that a glob match on a broken symbolic link is searched and finds nothing; the
 /// link has no canonical path, so the search keys it by its own path.
 #[cfg(unix)]
@@ -239,7 +254,7 @@ fn a_symbolic_link_cycle_terminates() {
     let outside = dir.path().join("outside");
     fs::create_dir_all(&outside).unwrap();
     fake_repo(&outside);
-    // A cycle: base/loop points back at base. walkdir reports it as an error, which `search` skips.
+    // A cycle: base/loop points back at base, which the walk has already entered, so it is not followed.
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(&base, base.join("loop")).unwrap();
