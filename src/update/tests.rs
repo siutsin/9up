@@ -64,7 +64,7 @@ fn common_answer(script: &CommonScript, argv: &[&str]) -> Option<io::Result<Outp
 /// A system answering enough git for the fetch and exec flows; fetch is scripted per test.
 struct StubSys {
     fetch: FetchStub,
-    prune_seen: std::cell::Cell<bool>,
+    prune_seen: std::sync::atomic::AtomicBool,
 }
 
 impl StubSys {
@@ -72,7 +72,7 @@ impl StubSys {
     fn new(fetch: FetchStub) -> Self {
         Self {
             fetch,
-            prune_seen: std::cell::Cell::new(false),
+            prune_seen: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -94,7 +94,8 @@ impl Sys for StubSys {
         match argv {
             ["fetch", ..] => {
                 if argv.contains(&"--prune") {
-                    self.prune_seen.set(true);
+                    self.prune_seen
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 match self.fetch {
                     FetchStub::CannotStart => {
@@ -188,7 +189,10 @@ fn current_only_fetches_the_tracked_remote_and_prune_reaches_fetch() {
         ] => assert_eq!(remote, "origin"),
         steps => panic!("unexpected steps: {}", steps.len()),
     }
-    assert!(sys.prune_seen.get(), "fetch argv must carry --prune");
+    assert!(
+        sys.prune_seen.load(std::sync::atomic::Ordering::Relaxed),
+        "fetch argv must carry --prune"
+    );
 }
 
 /// Guards that pruning stays off unless asked; a stray `--prune` would delete remote refs.
@@ -201,7 +205,7 @@ fn without_prune_fetch_has_no_prune_flag() {
         prune: false,
     };
     let _ = update_repo(&sys, Path::new("/repo"), "repo", &options);
-    assert!(!sys.prune_seen.get());
+    assert!(!sys.prune_seen.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// Guards remote parsing; config order and refspecs must survive, including a remote with none.

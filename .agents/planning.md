@@ -1,8 +1,8 @@
 # 9up Plan
 
 Status: the reference for a Rust CLI inspired by `gitup` 0.5.2. The implementation follows it.
-Milestone 1, the feature set specified below, is complete. Milestone 2 is concurrency;
-its plan is the last section of this document. It is not started.
+Milestone 1, the feature set specified below, is complete. Milestone 2, concurrency,
+is complete; its plan is the last section of this document.
 
 9up is a new tool, not a port. It does the jobs `gitup` (the Python `git-repo-updater` by Ben Kurtovic) does, in
 the same broad shape, because that shape works. Feature parity is the goal: the same jobs. Its state is its
