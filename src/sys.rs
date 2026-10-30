@@ -19,8 +19,8 @@ pub struct App<'a> {
     pub out: &'a mut (dyn io::Write + 'a),
 }
 
-/// OS services; tests swap in a stub to force failures a real system will not produce on cue.
-/// `Sync`, so milestone 2's worker threads can share one `&dyn Sys`.
+/// OS services; tests swap in a stub to force failures a real system will not produce
+/// on cue. `Sync`, so worker threads can share one `&dyn Sys`.
 pub trait Sys: Sync {
     /// Run git in `dir` with null stdin and an English locale, as branch logic reads git's words.
     /// The default fails: a test stub overrides only what it scripts.
@@ -44,7 +44,6 @@ pub trait Sys: Sync {
     }
 }
 
-/// The real services, over the OS.
 pub struct RealSys;
 
 /// Shared spawn setup: git and the user's command never block on the terminal or run elsewhere.
@@ -54,11 +53,11 @@ fn base(dir: &Path, program: &str) -> Command {
     command
 }
 
-/// Build the git command: the `-c` pairs come first and neutralise the command-running keys
-/// they name, and inherited `GIT_*` state is scrubbed. Repo-local `credential.helper` (on an
-/// https fetch), `core.gitProxy` (on a git:// fetch) and `filter.<driver>.*` (on a merge
-/// checkout) are not overridden: filter drivers have no `-c` way to neutralise them, and the
-/// other two stay honoured, like the user's setup.
+/// Build the git command: the `-c` pairs come first, neutralising the command-running
+/// keys they name, and inherited `GIT_*` state is scrubbed. Not overridden:
+/// `credential.helper` (fires on an https fetch), `core.gitProxy` (a git:// fetch)
+/// and filter drivers (a merge checkout): the drivers have no `-c` neutraliser,
+/// and the other two stay honoured.
 fn git_command(
     dir: &Path,
     argv: &[&str],
@@ -115,8 +114,8 @@ fn git_command(
 /// Per-stream cap, so a child printing forever cannot grow memory without bound.
 const OUTPUT_LIMIT: usize = 1 << 24;
 
-/// Read one stream to one past its cap, so the caller can tell a full stream
-/// from an over-long one and act on the report.
+/// Read one stream to one past its cap, so the caller can tell a full stream from
+/// an over-long one.
 fn read_capped(reader: Box<dyn Read + Send>, cap: usize) -> (Vec<u8>, bool) {
     let mut buffer = Vec::new();
     let _ = reader.take(cap as u64 + 1).read_to_end(&mut buffer);
@@ -173,7 +172,6 @@ fn capture(mut child: Child, cap: usize) -> io::Result<Output> {
 /// closes at once, so only a descendant holding it open can use this up.
 const READER_GRACE: Duration = Duration::from_secs(2);
 
-/// A reader that vanishes without reporting leaves an empty result.
 fn collect_readers(
     receiver: &std::sync::mpsc::Receiver<(bool, (Vec<u8>, bool))>,
     child: &mut Child,

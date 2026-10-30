@@ -70,7 +70,7 @@ jobs:
 
       - name: Run Claude review
         if: steps.check.outputs.should-run == 'true'
-        uses: anthropics/claude-code-action@6d5ae526d25ce88daa2200be073e1a373167f064 # v1.0.265
+        uses: anthropics/claude-code-action@8041f1d17e0e7d2f2cfe35002962e9f26237c0bb # v1.0.263
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           track_progress: false
@@ -88,7 +88,7 @@ jobs:
             3. Potential bugs or edge cases
             4. Idiomatic Rust: borrowed arguments, io::Result with `?`, no unwrap or expect outside tests, no print macros,
                and std before new crates
-            5. Behaviour parity with the Feature Spec in .agents/planning.md, and a row in the Differences From gitup table for every difference
+            5. Behaviour parity with the established behaviour in the code and tests: no silent change to the CLI details or the output wording
             6. Workflow and configuration correctness (GitHub Actions, TOML, YAML)
 
             Skip lock files.

@@ -11,7 +11,6 @@ pub fn file_path(flag: Option<&str>, config_dir: Option<&Path>) -> PathBuf {
     if let Some(path) = flag.filter(|path| !path.is_empty()) {
         return PathBuf::from(path);
     }
-    // `config_dir` comes from `main`: an absolute `XDG_CONFIG_HOME`, else `~/.config`.
     let config = config_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(".config"));
@@ -141,8 +140,8 @@ fn sync_array(array: &mut Array, entries: &[String]) {
         array.push_formatted(Value::from(entry).decorated(decor, ""));
     }
     if was_empty {
-        // The trailing text of an empty array can hold a comment.
-        // Only a comment-free one is replaced with the plain break.
+        // An empty array's trailing text can hold a comment; only a comment-free
+        // one is replaced with the plain break.
         let trailing = array.trailing().as_str().unwrap_or_default();
         if !trailing.contains('#') {
             array.set_trailing("\n");
@@ -174,8 +173,8 @@ fn line_comment(text: &str) -> Option<String> {
     line.contains('#').then(|| line.to_owned())
 }
 
-/// A new value's whitespace: the last value's line break and indentation, minus any decor comment.
-/// An inline array takes a space; an empty one, the one-key document's one-entry-per-line form.
+/// A new value's whitespace: the last value's line break and indentation, minus any
+/// decor comment. An inline array takes a space; an empty one, the per-line form.
 fn append_prefix(array: &Array) -> String {
     let Some(last) = array.iter().last() else {
         return "\n    ".to_owned();

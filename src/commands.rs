@@ -106,7 +106,7 @@ pub(crate) fn clean(app: &mut App) -> io::Result<ExitCode> {
     let mut lines = String::new();
     let mut removed = false;
     for entry in &entries {
-        // A comment entry is not a path the liveness test can judge; the plan keeps it.
+        // A comment entry is not a path, so the liveness test cannot judge it.
         if discover::comment_text(entry).is_some() {
             kept.push(entry.clone());
             continue;
@@ -165,10 +165,9 @@ pub(crate) fn exec(
 /// waiting, not CPU work, so the bound does not come from the core count.
 const MAX_CONCURRENT: usize = 8;
 
-/// Shared by `update` and `exec`: resolve each input in turn, after the group before it
-/// has rendered, print its group header, then run `work` on the group's repositories in
-/// batches while `render` prints each report on this thread. A comment input prints as
-/// its own line; a bad path prints in red.
+/// Shared by `update` and `exec`: resolve each input in turn — only after the group
+/// before it has rendered — then run its repositories in batches, rendering each
+/// report on this thread. A comment input prints as its own line; a bad path in red.
 fn for_each_repo<T>(
     app: &mut App,
     inputs: &[String],
@@ -229,9 +228,9 @@ enum Failure {
     Panic(Box<dyn std::any::Any + Send>),
 }
 
-/// Run one batch on scoped threads, joining the handles in name order and rendering each
-/// report as its join returns. Every handle is joined before this returns or unwinds, so
-/// a worker panic surfaces only as a join result.
+/// Run one batch on scoped threads, joining in name order and rendering each report
+/// as its join returns. Every handle is joined before this returns, so a worker
+/// panic surfaces only as a join result.
 fn run_batch<T>(
     app: &mut App,
     batch: &[discover::Repo],
@@ -241,8 +240,6 @@ fn run_batch<T>(
 where
     T: Send,
 {
-    // Split the context: only the shared services cross to the workers; the writer and
-    // the colour flag stay on this thread.
     let sys: &dyn Sys = &*app.sys;
     let colour = app.colour;
     let out: &mut dyn io::Write = &mut *app.out;

@@ -107,10 +107,8 @@ fn insert_update(mut args: Vec<OsString>) -> Vec<OsString> {
         break;
     }
     let insert = match positional {
-        // A path after `--` is a path, even when it is named like a command.
         Some(_) if after_separator => true,
         Some(index) => !COMMANDS.contains(&args[index].to_string_lossy().as_ref()),
-        // No path: a bare update option still means update.
         None => args
             .iter()
             .skip(1)

@@ -150,7 +150,6 @@ fn save_creates_the_one_key_document() {
     assert_eq!(load(&RealSys, &file).unwrap(), entries);
 }
 
-/// Save `entries` into a fresh file holding `seed`; return the text and the entries loaded back.
 fn run_save(seed: &str, entries: &[&str]) -> (String, Vec<String>) {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("config.toml");
@@ -427,10 +426,10 @@ fn save_appends_with_trailing_text_present() {
     assert!(!text.contains("\n,"), "{text}");
 }
 
-/// Guards the scoped exception in the plan: with a trailing comment on the last
-/// entry and no trailing comma, the break move must not run (the comment would
-/// swallow the separator), so the appended comma lands on its own line. The file
-/// stays valid and the comment survives.
+/// Guards the break-move exception: with a trailing comment on the last entry and
+/// no trailing comma, the break move must not run (the comment would swallow the
+/// separator), so the appended comma lands on its own line. The file stays valid
+/// and the comment survives.
 #[test]
 fn save_appends_past_a_comment_in_the_last_suffix() {
     let (text, loaded) = run_save(
