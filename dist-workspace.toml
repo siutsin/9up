@@ -1,0 +1,20 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.33.1"
+# release.yml is hand-adjusted after generation (action pins, scoped permissions,
+# zizmor ignores); allow-dirty stops `dist generate` from overwriting it.
+allow-dirty = ["ci"]
+ci = "github"
+installers = ["homebrew"]
+tap = "siutsin/homebrew-tap"
+# The formula takes the binary's name, not the package's (nine-up).
+formula = "9up"
+publish-jobs = ["homebrew"]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
