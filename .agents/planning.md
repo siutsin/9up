@@ -234,7 +234,7 @@ start, and a failed config write (which also exits 1) get error lines.
 | In a bare repository, the HEAD branch updates like any other. | `gitup` skips it as "not possible to fast-forward" and leaves it stale (probed against 0.5.2); `git branch -f` on a bare HEAD branch works, so the update is safe. |
 | A fetch does not recurse into submodules. | One less flag until a user needs it. |
 | `$VAR` never expands, in any path. | The expansion was a side effect, not a feature. |
-| Output prints per repository when the repository is done. No live fetch counters. | Milestone 2 concurrency needs this shape anyway. |
+| Output prints per repository, in name order, when its turn comes. No live fetch counters. | Milestone 2 concurrency needs this shape anyway. |
 | Ctrl-C stops the process. There is no "Stopped by user." message. | The default signal behaviour is enough. |
 
 ## Design Decisions
@@ -357,14 +357,14 @@ the `.git` layout, the directory search) work on path values and need no service
 | `main.rs` | The composition root and dispatch. Builds the `App` and hands each command to `commands`. |
 | `cli.rs` | `Cli`, `UpdateArgs`, the command enum and the bare-path argv shim. |
 | `commands.rs` | The add, delete, list, clean, update and exec flows, and the repository walk they share. Writes through the `App` output. |
-| `render.rs` | `paint`, the path headers, and rendering of every report. |
+| `render.rs` | `paint`, the path headers, and the rendering of update reports; `exec` renders inline in `commands` with these helpers. |
 | `sys.rs` | The `App` context, the `Sys` trait (git, exec, file read/write) and `RealSys`. Tests substitute a stub `Sys` to force failures. |
 | `config.rs` | The config file's entries, plus `load`, `save`, `normalize`. No output. |
 | `discover.rs` | `expand_home`, `glob_paths`, `resolve` and the depth-limited search. No `git` calls. |
 | `update.rs` | `repo_info`, `update_repo`, `exec_repo`, all over the `Sys` seam. No output. |
 
-A `Report` carries data only, so a caller can collect the reports from many repositories and render
-them in order (see Milestone 2).
+A `Report` carries data only, so a caller can run many repositories and render their reports in
+order as each one returns (see Milestone 2).
 
 Unit tests sit in `src/<module>/tests.rs`, a child module declared with `#[cfg(test)] mod tests;`, for
 every module except `main.rs`, which has none.
@@ -395,11 +395,59 @@ keeps `--fail-under-regions 100` and `--fail-under-functions 100`, so a producti
 function the tests never execute fails the run. A separate CI job reports branch coverage from a
 nightly toolchain, report only, never a gate.
 
-Milestone 2's tests sit in the `commands` unit tests: the latch-based overlap proof, the
-forced-reorder ordering test and the in-flight bound test from Milestone 2's acceptance;
-chunk-loop cases for empty, single, full and partial batches; and a writer that accepts a
-path header then fails, one case each for `update` and for `exec`, for the in-loop render
-error path. None of them asserts on elapsed time.
+Milestone 2 tests, in `commands` unit tests (with a new `Sync` latch stub, a
+latch writer and a recording writer there). The stub keys each repository by
+directory — it answers `--show-toplevel` with the directory the call
+received — and latches one call as the repository's start: the
+`config --get-regexp` call that opens every `update` worker, and the `exec`
+call for `exec` — `exec`'s `repo_info` `rev-parse` calls run before that
+call, outside the latch. A repository's finish is the return of the last
+call in the script the test gives it; for `exec`, start and finish are the
+entry and exit of the same call.
+For `update` and `exec`: latch concurrency; out-of-order completion leaves output
+unchanged; in-flight work never exceeds the bound. A barrier test (through
+`update`): with the first batch latched, one repository finishing does not start
+the next batch's first repository, and with its last render held open, the next
+batch still has not started. A two-path case (through `update`), the paths
+given on the command line: the latch writer creates a repository under the
+second path while the first group renders, and the second path's header
+counts it — the second path is resolved only after the first group has
+rendered — and a repository reached through both paths is visited twice. The
+same timing case runs (through `update`) with configured paths, against a
+`Sys` stub whose `read` calls are counted — one load is one read in an
+`update`/`exec` run — asserting the entries load once. With paths given, the
+same stub records no reads at all. A latch case runs an empty directory, a
+comment and a missing path before a real path, asserting no repository call
+starts for the first three and the run reaches the real path. The failure cases run through `update`
+only: hint-write failures, header-write failure,
+comment-write and path-error-write failures, a header-then-fail writer for the
+render-error rule, a render error with a panicked worker behind it, a
+panicking worker ahead of a failing render, and a panicking worker — the write
+failures asserting the error kind and the abort (no worker starts after a
+header failure; no later path prints after a comment or path-error failure);
+the render-error case also asserts every batch-mate finished before the call
+returned; the panic case asserting propagation, caught in the test with
+`catch_unwind` around `AssertUnwindSafe`, that its batch-mates finished, and
+that only the reports before it in name order printed. A two-panicking-workers
+case asserts the first payload in name (join) order propagates and the same
+printed prefix. The render-first combined case asserts the error kind is
+returned and the later panic discarded; the panic-first case asserts the
+first payload propagates and the later render is never attempted. One
+render-error case and the panic case sit in the first of two batches and
+assert the second batch's first repository never starts. Both fixtures carry
+a trailing second path, whose header never prints and whose first repository
+never starts. Second-batch variants of both use a three-batch group and
+assert the first batch's reports stand, the failing batch's mates finish,
+and no third batch starts. One
+variant places the failure in the second of three paths, asserting the first
+path's output stands complete and the third path never starts. One render-error
+case also runs through `exec`, with a latched batch behind the failing
+render, asserting the error kind is returned, the batch-mates finished
+before the call returned, and no later report prints. `exec`'s render writes
+keep their existing cases. The banner's write failure is not in these cases:
+it stays in `main`, before the commands run, unchanged. No exit-code assertions: the write-failure mapping stays in
+`main`, unchanged, and a panic's exit is the runtime's. None asserts on
+elapsed time.
 
 Behaviour tables, one row per case:
 
@@ -416,41 +464,64 @@ with the reason in the `clippy.toml` comment.
 
 ## Milestone 2 — Concurrency
 
-Goal: an `update` and an `exec` run works on several repositories at once, so a long list of
-repositories takes roughly the time of the slowest repository in each batch of at most 8, not
-the sum of all of them. The Feature Spec above does not change: same output, in the same order,
-with the same exit codes. Only the waiting changes.
+Goal: an `update` and an `exec` run works on several repositories of one path at once: each
+batch costs roughly its slowest repository, not the sum of all of them. The Feature Spec
+above does not change: same output, in the same order, with the same exit codes. Only the
+waiting changes — except inside a failing batch, where repositories after the failure have
+already run (see the render-error and panic rules). `add`, `delete`, `list` and `clean` are
+unchanged.
 
 Shape:
 
-- Concurrency is across repositories, never inside one: a repository's remotes still fetch in
-  configuration order and its branches still process in dependency order.
-- `update_repo` and `exec_repo` already return data and write nothing, so worker threads produce
-  `Report` values and the front end renders them in today's order — path order, then repository
-  name order. No interleaved output, whatever order the work finishes in. Concurrency is within
-  one resolved path group only: inputs are still processed one at a time, so headers, comment
-  lines and path errors print in exactly today's positions, and a repository reached through
-  two inputs is still visited twice, once per group.
-- Threads come from the standard library (scoped threads) over the existing `Sys` seam; no new
-  dependency. If the batch-boundary stall in the timing run ever dominates, the fix is a rolling
-  window of join handles in the same helper, still standard library only. The shared `Sys` must
-  be `Sync`, added as a supertrait of `Sys` in `sys.rs`. `RealSys` holds no mutable state and
-  needs no change. One test stub is not `Sync` today: `StubSys` in `update.rs`'s tests holds a
-  `Cell<bool>`; it becomes an `AtomicBool`. No other stub is affected.
-- The bound is a fixed 8 repositories at once (`MAX_CONCURRENT` in `commands.rs`), with no new
-  command-line option. The work is subprocess and network waiting, not CPU work, so the bound
-  does not come from the core count. Revisit only if a timing run against real remotes shows
-  the batch boundary, not the bound, dominating.
-- A worker panic is a bug, like a panic in today's sequential run: the join propagates it. No
-  unwind-catching machinery.
-- Discovery stays sequential: it is filesystem walking, and the git work it feeds dominates
-  the time.
+- Concurrency is across repositories — never across a repository's own steps — and
+  within one path only. Paths still run one at a time, in order; a path's resolved
+  repositories are its group. When no paths are given, the configured entries are
+  loaded once, before the first path runs, as today. With paths given, the
+  config file is not loaded. Every path, configured or given, is resolved
+  after the group before it has rendered. A repository reached through two
+  paths is still visited twice, once per group.
+- Workers produce `Report` values for `update` and `ExecReport` values for `exec`; both
+  commands share one helper in `commands` that joins the reports and renders them —
+  `update`'s through `render.rs`, `exec`'s inline in `commands` with
+  `render.rs` helpers. The `&mut App` and its writer never leave the front-end
+  thread; from `App`, only a shared `&dyn Sys` is given to the workers, with
+  each repository's path and name and the run's options or command.
+- For a path that resolves to repositories, the path header prints before the group's
+  workers spawn. A header write error aborts the run before that group's work starts,
+  as today. An empty group prints its zero-count header and spawns no batches. A
+  comment or a path error prints as today and spawns nothing. Write failures on
+  the header, a comment or a path error follow the render-error rule below;
+  all three are written with no batch running, so only the abort part applies.
+  The banner and `update`'s no-config hint line stay outside the helper, where
+  they are today; their write failures follow the same abort part.
+- Within a group, the name-sorted repositories run in consecutive batches of at most the
+  bound; a batch spawns only when the batch before it is fully joined and rendered.
+  Handles are joined in name order and each report renders as its join returns.
+- A render error aborts the run: no later batch, group or path runs. Reports already
+  rendered stand. The current batch's other workers still finish their work —
+  their handles are joined and their join results ignored — but their reports
+  do not print. If a worker among those joined after the error has panicked, the
+  panic is discarded. Whichever failure comes first in join order wins. A
+  `BrokenPipe` ends the run quietly with the success code; any other write
+  failure exits 1, both as today.
+- The worker threads are standard-library scoped threads over the existing `Sys`
+  seam; no new dependency. Add `Sync` as a supertrait of `Sys`; `StubSys`'s
+  `Cell<bool>` is not `Sync` and changes too.
+- The bound is a fixed 8 repositories at once, with no new command-line option; it
+  does not come from the core count. The bound counts repository workers only;
+  the two detached reader threads inside one `RealSys` `git`/`exec` capture do
+  not count against it.
+- A worker panic is a bug. When no render error precedes it in join order, the
+  batch's other workers finish and every handle is joined: reports before the
+  first panic in name order have printed, its own and later ones have not.
+  Then the first panic propagates: its payload is taken from its join error,
+  saved, and resumed with `std::panic::resume_unwind` once every handle in the
+  batch has been joined. Any later panic is
+  discarded: its payload and exit effect are dropped, though its panic message
+  has already reached stderr. The exit is a panic's, as it is today. No
+  `catch_unwind` in production code; every handle is joined before any return
+  out of the scope, so worker panics surface only as join results.
+- Discovery stays sequential: it is filesystem walking; the git work dominates the time.
 
-Acceptance: the behaviour tables above pass unchanged; a latch-based test proves two
-repositories are inside `fetch` at the same time (no timing assertions); a second test forces
-the later-named repository to finish first and asserts the rendered output is unchanged,
-repository blocks in name order; a third asserts no more than 8 fetches are ever in flight
-across 10 repositories. Timings on the real configured repository set are recorded in the pull
-request description as evidence; no test asserts on elapsed time. The coverage gate is
-unchanged and still passes: the new chunk loop (empty, single, full and partial batches) and
-the in-loop render error path each have a test, listed in the Tests section.
+Done means the Milestone 2 tests pass and the coverage gate passes; timings on
+the real configured set are recorded in the pull request as evidence.
