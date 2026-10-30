@@ -5,7 +5,7 @@ use crate::cli::UpdateArgs;
 use crate::render::{
     BOLD_GREEN, RED, clean as cleaned, paint, print_header, red_line, render_report,
 };
-use crate::sys::App;
+use crate::sys::{App, Sys};
 use crate::{config, discover, update};
 
 /// Normalise each path before the check, so no repository is stored twice under two spellings.
@@ -84,10 +84,13 @@ pub(crate) fn update(app: &mut App, args: &UpdateArgs) -> io::Result<ExitCode> {
         fetch_only: args.fetch_only,
         prune: args.prune,
     };
-    for_each_repo(app, &inputs, args.depth, |app, repo| {
-        let report = update::update_repo(&*app.sys, &repo.path, &repo.name, &options);
-        render_report(&report, app.colour, &mut *app.out)
-    })?;
+    for_each_repo(
+        app,
+        &inputs,
+        args.depth,
+        |sys, repo| update::update_repo(sys, &repo.path, &repo.name, &options),
+        |report, colour, out| render_report(report, colour, out),
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -138,30 +141,44 @@ pub(crate) fn exec(
     } else {
         paths.to_vec()
     };
-    for_each_repo(app, &inputs, depth, |app, repo| {
-        let report = update::exec_repo(&*app.sys, &repo.path, &repo.name, command);
-        let out = &mut *app.out;
-        writeln!(out, "  {}", paint(app.colour, BOLD_GREEN, &report.name))?;
-        if let Some(error) = &report.error {
-            red_line(out, app.colour, error)
-        } else {
-            for line in report.stdout.lines().chain(report.stderr.lines()) {
-                writeln!(out, "    {line}")?;
+    for_each_repo(
+        app,
+        &inputs,
+        depth,
+        |sys, repo| update::exec_repo(sys, &repo.path, &repo.name, command),
+        |report, colour, out| {
+            writeln!(out, "  {}", paint(colour, BOLD_GREEN, &report.name))?;
+            if let Some(error) = &report.error {
+                red_line(out, colour, error)
+            } else {
+                for line in report.stdout.lines().chain(report.stderr.lines()) {
+                    writeln!(out, "    {line}")?;
+                }
+                Ok(())
             }
-            Ok(())
-        }
-    })?;
+        },
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
-/// Shared by `update` and `exec`: resolve each input in turn, print its group header, run `op`
-/// on every repository found. A comment input prints as its own line; a bad path prints in red.
-fn for_each_repo(
+/// The most repositories one batch runs at once. The work is subprocess and network
+/// waiting, not CPU work, so the bound does not come from the core count.
+const MAX_CONCURRENT: usize = 8;
+
+/// Shared by `update` and `exec`: resolve each input in turn, after the group before it
+/// has rendered, print its group header, then run `work` on the group's repositories in
+/// batches while `render` prints each report on this thread. A comment input prints as
+/// its own line; a bad path prints in red.
+fn for_each_repo<T>(
     app: &mut App,
     inputs: &[String],
     depth: i32,
-    mut op: impl FnMut(&mut App, &discover::Repo) -> io::Result<()>,
-) -> io::Result<()> {
+    work: impl Fn(&dyn Sys, &discover::Repo) -> T + Sync,
+    mut render: impl FnMut(&T, bool, &mut dyn io::Write) -> io::Result<()>,
+) -> io::Result<()>
+where
+    T: Send,
+{
     for input in inputs {
         match discover::resolve(input, &app.cwd, app.home.as_deref(), depth) {
             discover::Resolved::Repos(repos) => {
@@ -173,9 +190,7 @@ fn for_each_repo(
                     &app.cwd,
                     repos.len(),
                 )?;
-                for repo in &repos {
-                    op(app, repo)?;
-                }
+                run_group(app, &repos, &work, &mut render)?;
             }
             discover::Resolved::Comment(text) => {
                 if !text.is_empty() {
@@ -188,6 +203,78 @@ fn for_each_repo(
         }
     }
     Ok(())
+}
+
+/// Run a path's repositories in consecutive batches: a batch spawns only when the batch
+/// before it is fully joined and rendered.
+fn run_group<T>(
+    app: &mut App,
+    repos: &[discover::Repo],
+    work: &(impl Fn(&dyn Sys, &discover::Repo) -> T + Sync),
+    render: &mut impl FnMut(&T, bool, &mut dyn io::Write) -> io::Result<()>,
+) -> io::Result<()>
+where
+    T: Send,
+{
+    for batch in repos.chunks(MAX_CONCURRENT) {
+        run_batch(app, batch, work, render)?;
+    }
+    Ok(())
+}
+
+/// What ended a batch early: a render failure, or the first worker panic in join order.
+/// Whichever comes first in join order wins; the other is discarded.
+enum Failure {
+    Render(io::Error),
+    Panic(Box<dyn std::any::Any + Send>),
+}
+
+/// Run one batch on scoped threads, joining the handles in name order and rendering each
+/// report as its join returns. Every handle is joined before this returns or unwinds, so
+/// a worker panic surfaces only as a join result.
+fn run_batch<T>(
+    app: &mut App,
+    batch: &[discover::Repo],
+    work: &(impl Fn(&dyn Sys, &discover::Repo) -> T + Sync),
+    render: &mut impl FnMut(&T, bool, &mut dyn io::Write) -> io::Result<()>,
+) -> io::Result<()>
+where
+    T: Send,
+{
+    // Split the context: only the shared services cross to the workers; the writer and
+    // the colour flag stay on this thread.
+    let sys: &dyn Sys = &*app.sys;
+    let colour = app.colour;
+    let out: &mut dyn io::Write = &mut *app.out;
+    let mut failure: Option<Failure> = None;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = batch
+            .iter()
+            .map(|repo| scope.spawn(|| work(sys, repo)))
+            .collect();
+        for handle in handles {
+            match handle.join() {
+                Ok(report) => {
+                    if failure.is_none()
+                        && let Err(err) = render(&report, colour, &mut *out)
+                    {
+                        failure = Some(Failure::Render(err));
+                    }
+                }
+                Err(payload) => {
+                    if failure.is_none() {
+                        failure = Some(Failure::Panic(payload));
+                    }
+                }
+            }
+        }
+    });
+    match failure {
+        None => Ok(()),
+        Some(Failure::Render(err)) => Err(err),
+        // The saved payload resumes only now, with every handle in the batch joined.
+        Some(Failure::Panic(payload)) => std::panic::resume_unwind(payload),
+    }
 }
 
 #[cfg(test)]

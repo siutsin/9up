@@ -20,7 +20,8 @@ pub struct App<'a> {
 }
 
 /// OS services; tests swap in a stub to force failures a real system will not produce on cue.
-pub trait Sys {
+/// `Sync`, so milestone 2's worker threads can share one `&dyn Sys`.
+pub trait Sys: Sync {
     /// Run git in `dir` with null stdin and an English locale, as branch logic reads git's words.
     /// The default fails: a test stub overrides only what it scripts.
     fn git(&self, _dir: &Path, _argv: &[&str]) -> io::Result<Output> {
