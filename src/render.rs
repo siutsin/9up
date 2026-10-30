@@ -27,6 +27,8 @@ pub(crate) fn paint(enabled: bool, code: &str, text: &str) -> String {
     }
 }
 
+/// A revision's display form: seven characters, or the whole string when it is
+/// shorter or the cut would split a character.
 fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }

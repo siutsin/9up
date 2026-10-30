@@ -168,6 +168,7 @@ fn tracked_remote(sys: &dyn Sys, path: &Path, branch: &str) -> Option<String> {
     Some(remote)
 }
 
+/// A report carrying only the error, for a failure before any step could run.
 fn failed(name: &str, message: &str) -> Report {
     Report {
         name: name.to_owned(),

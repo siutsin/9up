@@ -149,6 +149,7 @@ fn sync_array(array: &mut Array, entries: &[String]) {
     }
 }
 
+/// The text a value's decor puts before it, or an empty string when it has none.
 fn prefix_of(value: &Value) -> &str {
     value
         .decor()
@@ -157,6 +158,7 @@ fn prefix_of(value: &Value) -> &str {
         .unwrap_or_default()
 }
 
+/// The text a value's decor puts after it, or an empty string when it has none.
 fn suffix_of(value: &Value) -> &str {
     value
         .decor()
@@ -165,6 +167,7 @@ fn suffix_of(value: &Value) -> &str {
         .unwrap_or_default()
 }
 
+/// The first line of `text`, when that line carries a `#` comment.
 fn line_comment(text: &str) -> Option<String> {
     let line = match text.find('\n') {
         Some(index) => &text[..index],
