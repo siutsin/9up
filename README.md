@@ -97,11 +97,11 @@ brew install siutsin/tap/9up
 To change targets or installers, edit `dist-workspace.toml`, run `dist generate` and commit
 the result. `dist` itself comes from its installer, at the version the config pins:
 `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.1/cargo-dist-installer.sh | sh`.
-The generated workflow is not hand-edited, except one line: `environment: deployment` on
-the publish job, so it can read the tap token from that environment. The config's
-`allow-dirty` entry keeps `dist generate` from overwriting it silently — re-add the line
-to the regenerated file before committing. The workflow's zizmor findings are accepted in
-the root `zizmor.yml`, scoped to that file.
+The workflow started as `dist generate` output and is now maintained by hand, trimmed to
+what this repo needs; the config's `allow-dirty` entry records that it differs from the
+generated file. One line in it is local: `environment: deployment` on the publish job, so
+it can read the tap token from that environment. The workflow's zizmor findings are
+accepted in the root `zizmor.yml`, scoped to that file.
 
 ## Credit
 

@@ -3,9 +3,8 @@ members = ["cargo:."]
 
 [dist]
 cargo-dist-version = "0.33.1"
-# release.yml carries one local line: environment: deployment on the publish
-# job, so it can read the tap token from that environment. allow-dirty
-# records that the file is expected to differ from the generated output.
+# release.yml started as generated output and is now kept by hand;
+# allow-dirty records that it is expected to differ from the generated file.
 allow-dirty = ["ci"]
 ci = "github"
 installers = ["homebrew"]
