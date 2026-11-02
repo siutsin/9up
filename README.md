@@ -67,7 +67,7 @@ publishes a Homebrew formula to the `siutsin/homebrew-tap` tap.
 One-time setup:
 
 - Create the `siutsin/homebrew-tap` repository on GitHub.
-- Create a `deployment` environment and add a `HOMEBREW_TAP_TOKEN` secret to it, holding a token with
+- In this repo, create a `deployment` environment and add a `HOMEBREW_TAP_TOKEN` secret to it, holding a token with
   write access to the tap. The workflow's own token cannot write to another repository, so
   the formula publish step uses this one, and its job declares the environment to read it.
 
@@ -95,13 +95,14 @@ brew install siutsin/tap/9up
 ```
 
 To change targets or installers, edit `dist-workspace.toml`, run `dist generate` and commit
-the result. `dist` itself comes from its installer, at the version the config pins:
+the result. A fresh generate overwrites the hand trims and the publish job's environment
+line, so re-apply both before committing. `dist` itself comes from its installer, at the version the config pins:
 `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.1/cargo-dist-installer.sh | sh`.
 The workflow started as `dist generate` output and is now maintained by hand, trimmed to
 what this repo needs; the config's `allow-dirty` entry records that it differs from the
 generated file. One line in it is local: `environment: deployment` on the publish job, so
 it can read the tap token from that environment. The workflow's zizmor findings are
-accepted in the root `zizmor.yml`, scoped to that file.
+accepted in the root `zizmor.yaml`, scoped to that file.
 
 ## Credit
 
