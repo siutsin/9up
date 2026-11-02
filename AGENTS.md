@@ -21,3 +21,7 @@ in production code. Unit tests live in `src/<module>/tests.rs`.
    every push. Merge only when CI is green. Ask before pushing.
 7. Every function carries a short doc comment, tests and helpers included: one line stating what it
    guarantees or why it exists, never a restatement of its name.
+8. Before tagging a release, prove the formula installs: with a local Homebrew, trust the tap,
+   run `brew style` on the generated formula, then `brew install` it and run the installed
+   `9up --version`. The install is the gate: it catches a formula Homebrew cannot load. The missing
+   `test do` block complaint in style and audit is expected noise, as dist writes no test block.
