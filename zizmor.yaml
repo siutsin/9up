@@ -1,0 +1,15 @@
+# release.yaml began as cargo-dist output and is now kept by hand;
+# its findings are accepted here, scoped to that one file.
+rules:
+  unpinned-uses:
+    ignore:
+      - release.yaml
+  template-injection:
+    ignore:
+      - release.yaml
+  unpinned-images:
+    ignore:
+      - release.yaml
+  excessive-permissions:
+    ignore:
+      - release.yaml
