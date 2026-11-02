@@ -44,10 +44,10 @@ macOS included. A relative `XDG_CONFIG_HOME` is ignored with a warning, and an e
 
 ### Options
 
-| Command  | Options                                                                                          |
-|----------|--------------------------------------------------------------------------------------------------|
-| `update` | `--current-only`, `--fetch-only`, `--prune`, `--depth <n>` (short `-t`; negative means no limit) |
-| `exec`   | `--depth <n>`                                                                                    |
+| Command  | Options                                                                                                                                |
+|----------|----------------------------------------------------------------------------------------------------------------------------------------|
+| `update` | `--current-only`, `--fetch-only`, `--prune`, `--depth <n>` (short `-t`; negative means no limit), `--jobs <n>` (short `-j`; default 8) |
+| `exec`   | `--depth <n>`, `--jobs <n>` (short `-j`; default 8)                                                                                    |
 
 ## Development
 

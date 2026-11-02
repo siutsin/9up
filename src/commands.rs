@@ -89,6 +89,7 @@ pub(crate) fn update(app: &mut App, args: &UpdateArgs) -> io::Result<ExitCode> {
         app,
         &inputs,
         args.depth,
+        args.jobs.get(),
         |sys, repo| update::update_repo(sys, &repo.path, &repo.name, &options),
         |report, colour, out| render_report(report, colour, out),
     )?;
@@ -134,6 +135,7 @@ pub(crate) fn exec(
     app: &mut App,
     paths: &[String],
     depth: i32,
+    jobs: usize,
     command: &[String],
 ) -> io::Result<ExitCode> {
     let inputs: Vec<String> = if paths.is_empty() {
@@ -146,6 +148,7 @@ pub(crate) fn exec(
         app,
         &inputs,
         depth,
+        jobs,
         |sys, repo| update::exec_repo(sys, &repo.path, &repo.name, command),
         |report, colour, out| {
             writeln!(out, "  {}", paint(colour, BOLD_GREEN, &report.name))?;
@@ -161,11 +164,6 @@ pub(crate) fn exec(
     )?;
     Ok(ExitCode::SUCCESS)
 }
-
-/// The most repositories one batch runs at once, pooled across every input.
-/// The work is subprocess and network waiting, not CPU work, so the bound does
-/// not come from the core count.
-const MAX_CONCURRENT: usize = 8;
 
 /// What prints ahead of a group's reports: its header, or the line a
 /// repository-less input stands for.
@@ -204,6 +202,7 @@ fn for_each_repo<T>(
     app: &mut App,
     inputs: &[String],
     depth: i32,
+    jobs: usize,
     work: impl Fn(&dyn Sys, &discover::Repo) -> T + Sync,
     mut render: impl FnMut(&T, bool, &mut dyn io::Write) -> io::Result<()>,
 ) -> io::Result<()>
@@ -240,31 +239,41 @@ where
         flush(pair.0, colour, out)?;
         render(&pair.1, colour, out)
     };
-    for batch in pooled.chunks(MAX_CONCURRENT) {
-        run_batch(app, batch, &pooled_work, &mut pooled_render)?;
+    for batch in pooled.chunks(jobs) {
+        match run_batch(app, batch, &pooled_work, &mut pooled_render) {
+            Ok(()) => {}
+            Err(Failure::Render(err)) => return Err(err),
+            Err(Failure::Panic(item, payload)) => {
+                // Print the panicking group's prelude first; it belongs
+                // ahead of that group's reports.
+                flush(item.0, app.colour, &mut *app.out)?;
+                std::panic::resume_unwind(payload);
+            }
+        }
     }
-    if !preludes.is_empty() {
-        flush(preludes.len() - 1, app.colour, &mut *app.out)?;
-    }
+    // With no inputs this flushes nothing: the length saturates at zero and
+    // the flush loop's own bound stops it.
+    flush(preludes.len().saturating_sub(1), app.colour, &mut *app.out)?;
     Ok(())
 }
 
-/// What ended a batch early: a render failure, or the first worker panic in join order.
-/// Whichever comes first in join order wins; the other is discarded.
-enum Failure {
+/// What ended a batch early: a render failure, or the first worker panic in
+/// join order. The other failure is discarded. A panic carries its item, so
+/// the caller prints its prelude before the panic resumes.
+enum Failure<'a, I> {
     Render(io::Error),
-    Panic(Box<dyn std::any::Any + Send>),
+    Panic(&'a I, Box<dyn std::any::Any + Send>),
 }
 
 /// Run one batch on scoped threads, joining in name order and rendering each report
 /// as its join returns. Every handle is joined before this returns, so a worker
-/// panic surfaces only as a join result.
-fn run_batch<T, I>(
+/// panic surfaces only as a returned failure, never mid-batch.
+fn run_batch<'a, T, I>(
     app: &mut App,
-    batch: &[I],
+    batch: &'a [I],
     work: &(impl Fn(&dyn Sys, &I) -> T + Sync),
     render: &mut impl FnMut(&T, bool, &mut dyn io::Write) -> io::Result<()>,
-) -> io::Result<()>
+) -> Result<(), Failure<'a, I>>
 where
     T: Send,
     I: Sync,
@@ -272,13 +281,13 @@ where
     let sys: &dyn Sys = &*app.sys;
     let colour = app.colour;
     let out: &mut dyn io::Write = &mut *app.out;
-    let mut failure: Option<Failure> = None;
+    let mut failure: Option<Failure<'_, I>> = None;
     std::thread::scope(|scope| {
         let handles: Vec<_> = batch
             .iter()
             .map(|repo| scope.spawn(|| work(sys, repo)))
             .collect();
-        for handle in handles {
+        for (item, handle) in batch.iter().zip(handles) {
             match handle.join() {
                 Ok(report) => {
                     if failure.is_none()
@@ -289,7 +298,7 @@ where
                 }
                 Err(payload) => {
                     if failure.is_none() {
-                        failure = Some(Failure::Panic(payload));
+                        failure = Some(Failure::Panic(item, payload));
                     }
                 }
             }
@@ -297,9 +306,7 @@ where
     });
     match failure {
         None => Ok(()),
-        Some(Failure::Render(err)) => Err(err),
-        // The saved payload resumes only now, with every handle in the batch joined.
-        Some(Failure::Panic(payload)) => std::panic::resume_unwind(payload),
+        Some(failure) => Err(failure),
     }
 }
 
