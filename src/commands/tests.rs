@@ -89,15 +89,15 @@ fn commands_report_a_failed_write() {
             update(app, &UpdateArgs::default())
         }),
         ("exec missing path", missing.clone(), |app| {
-            exec(app, &[], 3, &["true".to_owned()])
+            exec(app, &[], 3, 8, &["true".to_owned()])
         }),
         (
             "exec comment",
             b"repositories = [\"# note\"]\n".to_vec(),
-            |app| exec(app, &[], 3, &["true".to_owned()]),
+            |app| exec(app, &[], 3, 8, &["true".to_owned()]),
         ),
         ("exec header", repo, |app| {
-            exec(app, &[], 3, &["true".to_owned()])
+            exec(app, &[], 3, 8, &["true".to_owned()])
         }),
         ("add", empty.clone(), |app| add(app, &["/x".to_owned()])),
         ("add stored", stored.clone(), |app| {
@@ -155,7 +155,7 @@ fn exec_prints_a_missing_path_through_the_app() {
     let config = b"repositories = [\"/nonexistent-9up-test\"]\n".to_vec();
     let mut out: Vec<u8> = Vec::new();
     let mut app = test_app(config, dir.path(), &mut out);
-    assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_ok());
+    assert!(exec(&mut app, &[], 3, 8, &["true".to_owned()]).is_ok());
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("doesn't exist."), "{text}");
 }
@@ -167,7 +167,19 @@ fn exec_prints_nothing_for_an_empty_comment() {
     let config = b"repositories = [\"#\"]\n".to_vec();
     let mut out: Vec<u8> = Vec::new();
     let mut app = test_app(config, dir.path(), &mut out);
-    assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_ok());
+    assert!(exec(&mut app, &[], 3, 8, &["true".to_owned()]).is_ok());
+    assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
+}
+
+/// Guards that `exec` with an empty config and no paths runs nothing and
+/// prints nothing.
+#[test]
+fn exec_with_an_empty_config_prints_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = b"repositories = []\n".to_vec();
+    let mut out: Vec<u8> = Vec::new();
+    let mut app = test_app(config, dir.path(), &mut out);
+    assert!(exec(&mut app, &[], 3, 8, &["true".to_owned()]).is_ok());
     assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
 }
 
@@ -253,7 +265,7 @@ fn exec_runs_in_an_explicitly_named_repository() {
         out: &mut out,
     };
     let paths = vec![repo.display().to_string()];
-    assert!(exec(&mut app, &paths, 3, &["ls".to_owned()]).is_ok());
+    assert!(exec(&mut app, &paths, 3, 8, &["ls".to_owned()]).is_ok());
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("hello"), "{text}");
 }
@@ -264,7 +276,7 @@ fn exec_reports_an_unparseable_config() {
     let dir = tempfile::tempdir().unwrap();
     let mut out: Vec<u8> = Vec::new();
     let mut app = test_app(b"repositories = [\n".to_vec(), dir.path(), &mut out);
-    assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_err());
+    assert!(exec(&mut app, &[], 3, 8, &["true".to_owned()]).is_err());
 }
 
 /// A system that fails every call, so `exec_repo` can only report an unreadable repository.
@@ -522,7 +534,7 @@ fn exec_prints_a_comment_entry() {
     let config = b"repositories = [\"# note\"]\n".to_vec();
     let mut out: Vec<u8> = Vec::new();
     let mut app = test_app(config, dir.path(), &mut out);
-    assert!(exec(&mut app, &[], 3, &["true".to_owned()]).is_ok());
+    assert!(exec(&mut app, &[], 3, 8, &["true".to_owned()]).is_ok());
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("note"), "{text}");
 }
@@ -542,7 +554,7 @@ fn exec_reports_a_failed_repository_name_write() {
     };
     let mut app = app_with(Box::new(RepoExecSys), dir.path(), &mut out);
     let paths = vec![repo.display().to_string()];
-    assert!(exec(&mut app, &paths, 3, &["ls".to_owned()]).is_err());
+    assert!(exec(&mut app, &paths, 3, 8, &["ls".to_owned()]).is_err());
 }
 
 /// Guards that a write failing on a command output line stops `exec` with an error.
@@ -559,7 +571,7 @@ fn exec_reports_a_failed_output_line_write() {
     };
     let mut app = app_with(Box::new(RepoExecSys), dir.path(), &mut out);
     let paths = vec![repo.display().to_string()];
-    assert!(exec(&mut app, &paths, 3, &["ls".to_owned()]).is_err());
+    assert!(exec(&mut app, &paths, 3, 8, &["ls".to_owned()]).is_err());
 }
 
 /// Guards that `exec` prints the error line for a repository it cannot read.
@@ -572,7 +584,7 @@ fn exec_prints_a_repository_error() {
     let mut out: Vec<u8> = Vec::new();
     let mut app = app_with(Box::new(FailingSys), dir.path(), &mut out);
     let paths = vec![repo.display().to_string()];
-    assert!(exec(&mut app, &paths, 3, &["ls".to_owned()]).is_ok());
+    assert!(exec(&mut app, &paths, 3, 8, &["ls".to_owned()]).is_ok());
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("Could not read the repository."), "{text}");
 }
@@ -1031,7 +1043,7 @@ fn spawn_exec(
             colour: false,
             out: &mut out,
         };
-        exec(&mut app, &paths, 3, &["ls".to_owned()])
+        exec(&mut app, &paths, 3, 8, &["ls".to_owned()])
     })
 }
 
@@ -1093,6 +1105,65 @@ fn exec_workers_overlap() {
     assert_eq!(handle.join().unwrap().unwrap(), ExitCode::SUCCESS);
     let text = writer.text();
     assert!(text.contains("r01") && text.contains("r02"), "{text}");
+}
+
+/// Guards that workers from every path share one pool: all four start calls
+/// are inside at once, across two paths, where a per-path run would render
+/// the first path before the second path's workers could start.
+#[test]
+fn update_workers_overlap_across_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let base1 = dir.path().join("base1");
+    make_repos(&base1, "r", 2);
+    let base2 = dir.path().join("base2");
+    make_repos(&base2, "s", 2);
+    let latch = Latch::new();
+    let sys = LatchSys::new(&latch, LatchMode::Update, true);
+    let writer = TestWriter::new();
+    let args = UpdateArgs {
+        paths: vec![base1.display().to_string(), base2.display().to_string()],
+        depth: 3,
+        ..Default::default()
+    };
+    let handle = spawn_update(sys, dir.path(), args, writer.clone());
+    latch.wait_for_started(4);
+    assert!(latch.finished().is_empty());
+    latch.release_all();
+    assert_eq!(handle.join().unwrap().unwrap(), ExitCode::SUCCESS);
+    let text = writer.text();
+    let first_header = text.find(&base1.display().to_string()).unwrap();
+    let second_header = text.find(&base2.display().to_string()).unwrap();
+    assert!(first_header < text.find("  r01").unwrap(), "{text}");
+    assert!(text.find("  r02").unwrap() < second_header, "{text}");
+    assert!(second_header < text.find("  s01").unwrap(), "{text}");
+    assert!(text.contains("  s02"), "{text}");
+}
+
+/// Guards the same pooled overlap for `exec`, and that the two paths' blocks
+/// still print in path order.
+#[test]
+fn exec_workers_overlap_across_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let base1 = dir.path().join("base1");
+    make_repos(&base1, "r", 2);
+    let base2 = dir.path().join("base2");
+    make_repos(&base2, "s", 2);
+    let latch = Latch::new();
+    let sys = LatchSys::new(&latch, LatchMode::Exec, true);
+    let writer = TestWriter::new();
+    let paths = vec![base1.display().to_string(), base2.display().to_string()];
+    let handle = spawn_exec(sys, dir.path(), paths, writer.clone());
+    latch.wait_for_started(4);
+    assert!(latch.finished().is_empty());
+    latch.release_all();
+    assert_eq!(handle.join().unwrap().unwrap(), ExitCode::SUCCESS);
+    let text = writer.text();
+    let first_header = text.find(&base1.display().to_string()).unwrap();
+    let second_header = text.find(&base2.display().to_string()).unwrap();
+    assert!(first_header < text.find("  r01").unwrap(), "{text}");
+    assert!(text.find("  r02").unwrap() < second_header, "{text}");
+    assert!(second_header < text.find("  s01").unwrap(), "{text}");
+    assert!(text.contains("  s02"), "{text}");
 }
 
 /// Guards that an `update` whose later-named repository finishes first renders
@@ -1158,7 +1229,7 @@ fn exec_out_of_order_completion_keeps_the_output() {
         out: &mut out,
     };
     let paths = vec![base.display().to_string()];
-    exec(&mut app, &paths, 3, &["ls".to_owned()]).unwrap();
+    exec(&mut app, &paths, 3, 8, &["ls".to_owned()]).unwrap();
     assert_eq!(writer.text(), control_writer.text());
     let text = writer.text();
     assert!(
@@ -1244,13 +1315,12 @@ fn the_next_batch_waits_for_join_and_render() {
     assert!(latch.started().contains(&repos[8]));
 }
 
-/// Guards that a path is resolved only after the group before it has rendered:
-/// while the first group's render is held open, the writer creates a
-/// repository under the second path, and the second path's header counts it.
-/// The shared repository is visited twice, once per group. Paths were given,
-/// so the config file is never read.
+/// Guards that every path is resolved before the pooled run starts: while
+/// the first path's render is held open, the writer creates a repository
+/// under the second path, and the second path's header still counts none.
+/// Paths were given, so the config file is never read.
 #[test]
-fn a_path_is_resolved_after_the_group_before_it_renders() {
+fn all_paths_are_resolved_before_the_run_starts() {
     let dir = tempfile::tempdir().unwrap();
     let base1 = dir.path().join("base1");
     let repos = make_repos(&base1, "r", 1);
@@ -1274,22 +1344,20 @@ fn a_path_is_resolved_after_the_group_before_it_renders() {
     assert_eq!(handle.join().unwrap().unwrap(), ExitCode::SUCCESS);
     let text = writer.text();
     assert!(
-        text.contains(&format!("{} (1 repository)", base2.display())),
+        text.contains(&format!("{} (0 repositories)", base2.display())),
         "{text}"
     );
-    assert!(text.contains("  link"), "{text}");
-    // The same repository, under both spellings: visited once per group.
-    let started = latch.started();
-    assert_eq!(started.len(), 2);
-    assert!(started.contains(&repos[0]));
-    assert!(started.contains(&base2.join("link")));
+    assert!(!text.contains("  link"), "{text}");
+    // The second path was resolved before the link existed: only the first
+    // path's repository is visited.
+    assert_eq!(latch.started(), HashSet::from([repos[0].clone()]));
     assert_eq!(latch.reads(), 0);
 }
 
 /// Guards the same timing for configured paths, and that the configured
 /// entries load exactly once for the whole run.
 #[test]
-fn configured_paths_load_once_and_resolve_after_each_group() {
+fn configured_paths_load_once_and_resolve_upfront() {
     let dir = tempfile::tempdir().unwrap();
     let base1 = dir.path().join("base1");
     let repos = make_repos(&base1, "r", 1);
@@ -1318,10 +1386,10 @@ fn configured_paths_load_once_and_resolve_after_each_group() {
     assert_eq!(handle.join().unwrap().unwrap(), ExitCode::SUCCESS);
     let text = writer.text();
     assert!(
-        text.contains(&format!("{} (1 repository)", base2.display())),
+        text.contains(&format!("{} (0 repositories)", base2.display())),
         "{text}"
     );
-    assert!(text.contains("  link"), "{text}");
+    assert!(!text.contains("  link"), "{text}");
     assert_eq!(latch.reads(), 1);
 }
 
@@ -1372,9 +1440,9 @@ fn a_failed_hint_write_is_an_error() {
     assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
 }
 
-/// Guards that a failed header write aborts the run before any worker starts.
+/// Guards that a failed header write aborts the run with that error.
 #[test]
-fn a_failed_header_write_starts_no_worker() {
+fn a_failed_header_write_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let base = dir.path().join("base");
     make_repos(&base, "r", 2);
@@ -1385,7 +1453,6 @@ fn a_failed_header_write_starts_no_worker() {
     let args = one_path(&base);
     let err = update(&mut app, &args).unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
-    assert!(latch.started().is_empty());
 }
 
 /// Guards that a failed comment write aborts the run: no later path prints.
@@ -1404,7 +1471,6 @@ fn a_failed_comment_write_aborts_later_paths() {
     };
     let err = run_update(sys, dir.path(), &args, writer.clone()).unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::Other);
-    assert!(latch.started().is_empty());
     assert!(!writer.attempted("(1 repository)"));
 }
 
@@ -1427,8 +1493,27 @@ fn a_failed_path_error_write_aborts_later_paths() {
     };
     let err = run_update(sys, dir.path(), &args, writer.clone()).unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::Other);
-    assert!(latch.started().is_empty());
     assert!(!writer.attempted("(1 repository)"));
+}
+
+/// Guards that a failed write in the trailing flush — a comment after the
+/// last repository's path — is an error, and the finished report stands.
+#[test]
+fn a_failed_trailing_comment_write_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base");
+    make_repos(&base, "r", 1);
+    let latch = Latch::new();
+    let sys = LatchSys::new(&latch, LatchMode::Update, false);
+    let writer = TestWriter::failing_on("note");
+    let args = UpdateArgs {
+        paths: vec![base.display().to_string(), "# note".to_owned()],
+        depth: 3,
+        ..Default::default()
+    };
+    let err = run_update(sys, dir.path(), &args, writer.clone()).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::Other);
+    assert!(writer.text().contains("r01"), "{}", writer.text());
 }
 
 /// Guards the render-error rule: the error is returned, every batch-mate had
@@ -1498,6 +1583,30 @@ fn a_render_error_in_the_first_batch_stops_later_batches_and_paths() {
     }
 }
 
+/// Guards that the jobs bound sets the pooled batch size across paths: with
+/// two jobs, a render error in the first batch leaves the second path's
+/// workers unstarted.
+#[test]
+fn jobs_limits_the_batch_across_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let base1 = dir.path().join("base1");
+    let repos = make_repos(&base1, "r", 2);
+    let base2 = dir.path().join("base2");
+    make_repos(&base2, "s", 2);
+    let latch = Latch::new();
+    let sys = LatchSys::new(&latch, LatchMode::Update, false);
+    let writer = TestWriter::failing_on("r02");
+    let args = UpdateArgs {
+        paths: vec![base1.display().to_string(), base2.display().to_string()],
+        depth: 3,
+        jobs: std::num::NonZeroUsize::new(2).unwrap(),
+        ..Default::default()
+    };
+    let err = run_update(sys, dir.path(), &args, writer.clone()).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::Other);
+    assert_eq!(latch.started(), HashSet::from_iter(repos.iter().cloned()));
+}
+
 /// Guards the second-batch variant: with the failure in the second of three
 /// batches, the first batch's reports stand, the failing batch's mates
 /// finish, and no third batch starts.
@@ -1551,6 +1660,56 @@ fn a_panicking_worker_propagates_after_its_batch_mates_finish() {
     assert!(text.contains("r01"), "{text}");
     assert!(!text.contains("r02"), "{text}");
     assert!(!text.contains("r03"), "{text}");
+}
+
+/// Guards that a panic does not swallow the lines that belong ahead of its
+/// group: a leading comment and the group's own header print before the
+/// panic resumes, and the panicking worker prints no report.
+#[test]
+fn a_panic_keeps_the_preludes_ahead_of_its_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base");
+    let repos = make_repos(&base, "r", 1);
+    let latch = Latch::new();
+    let mut sys = LatchSys::new(&latch, LatchMode::Update, false);
+    sys.panics.insert(repos[0].clone(), PanicAt::Fetch);
+    let writer = TestWriter::new();
+    let args = UpdateArgs {
+        paths: vec!["# note".to_owned(), base.display().to_string()],
+        depth: 3,
+        ..Default::default()
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_update(sys, dir.path(), &args, writer.clone())
+    }));
+    let payload = result.unwrap_err();
+    assert!(
+        panic_text(&payload).contains(&repos[0].display().to_string()),
+        "{}",
+        panic_text(&payload)
+    );
+    let text = writer.text();
+    assert!(
+        text.find("note").unwrap() < text.find("(1 repository)").unwrap(),
+        "{text}"
+    );
+    assert!(!text.contains("  r01"), "{text}");
+}
+
+/// Guards that a failed prelude write ahead of a panic returns the write
+/// error: the panic is discarded, as a panic behind a render error is.
+#[test]
+fn a_failed_prelude_write_ahead_of_a_panic_returns_the_write_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base");
+    let repos = make_repos(&base, "r", 1);
+    let latch = Latch::new();
+    let mut sys = LatchSys::new(&latch, LatchMode::Update, false);
+    sys.panics.insert(repos[0].clone(), PanicAt::Fetch);
+    let writer = TestWriter::failing_on(&base.display().to_string());
+    let err = run_update(sys, dir.path(), &one_path(&base), writer.clone()).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::Other);
+    assert!(writer.attempted(&base.display().to_string()));
 }
 
 /// Guards the panic-first combined case: a panicking worker ahead of a
@@ -1680,7 +1839,7 @@ fn a_panic_in_the_second_batch_keeps_the_first() {
 }
 
 /// Guards that a failure in the second of three paths leaves the first path's
-/// output standing complete and the third path untouched.
+/// output standing complete and the third path unprinted.
 #[test]
 fn a_failure_in_the_second_of_three_paths() {
     let dir = tempfile::tempdir().unwrap();
@@ -1689,7 +1848,7 @@ fn a_failure_in_the_second_of_three_paths() {
     let base_b = dir.path().join("base-b");
     make_repos(&base_b, "b", 1);
     let base_c = dir.path().join("base-c");
-    let repos_c = make_repos(&base_c, "c", 1);
+    make_repos(&base_c, "c", 1);
     let latch = Latch::new();
     let sys = LatchSys::new(&latch, LatchMode::Update, false);
     let writer = TestWriter::failing_on("b01");
@@ -1707,7 +1866,7 @@ fn a_failure_in_the_second_of_three_paths() {
     let text = writer.text();
     assert!(text.contains("a01"), "{text}");
     assert!(text.contains("origin is up to date."), "{text}");
-    assert!(!latch.started().contains(&repos_c[0]));
+    assert!(!text.contains("c01"), "{text}");
     assert!(!writer.attempted(&base_c.display().to_string()));
 }
 

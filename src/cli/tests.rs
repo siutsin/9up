@@ -45,6 +45,10 @@ fn bare_options_without_a_path_mean_update() {
     assert_eq!(shim(&["9up", "-t-1"]), ["9up", "update", "-t-1"]);
     assert_eq!(shim(&["9up", "-t=3"]), ["9up", "update", "-t=3"]);
     assert_eq!(shim(&["9up", "--depth=2"]), ["9up", "update", "--depth=2"]);
+    assert_eq!(shim(&["9up", "-j"]), ["9up", "update", "-j"]);
+    assert_eq!(shim(&["9up", "-j2"]), ["9up", "update", "-j2"]);
+    assert_eq!(shim(&["9up", "-j=2"]), ["9up", "update", "-j=2"]);
+    assert_eq!(shim(&["9up", "--jobs=2"]), ["9up", "update", "--jobs=2"]);
     assert_eq!(
         shim(&["9up", "-C", "f", "-c"]),
         ["9up", "update", "-C", "f", "-c"]
@@ -78,6 +82,55 @@ fn a_depth_value_is_not_a_command_word() {
         shim(&["9up", "-t", "list"]),
         ["9up", "update", "-t", "list"]
     );
+}
+
+/// Guards that a jobs value is skipped like a depth value; otherwise `list` as a jobs
+/// value reads as the list command and clap blames the wrong thing.
+#[test]
+fn a_jobs_value_is_not_a_command_word() {
+    assert_eq!(
+        shim(&["9up", "-j", "list"]),
+        ["9up", "update", "-j", "list"]
+    );
+    assert_eq!(
+        shim(&["9up", "--jobs", "list"]),
+        ["9up", "update", "--jobs", "list"]
+    );
+    assert_eq!(
+        shim(&["9up", "-j", "2", "a"]),
+        ["9up", "update", "-j", "2", "a"]
+    );
+}
+
+/// Pull the jobs value out of a parsed CLI, so the parse cases read as plain values.
+fn parsed_jobs(args: &[&str]) -> NonZeroUsize {
+    match Cli::try_parse_from(args).unwrap().command {
+        Some(Command::Update(args)) => args.jobs,
+        Some(Command::Exec { jobs, .. }) => jobs,
+        _ => panic!("expected update or exec"),
+    }
+}
+
+/// Guards that jobs parses for both pooled commands, defaults to the bound, and
+/// that the struct default carries the same bound for the bare form.
+#[test]
+fn jobs_parses_and_defaults_for_update_and_exec() {
+    assert_eq!(parsed_jobs(&["9up", "update"]), DEFAULT_JOBS);
+    assert_eq!(parsed_jobs(&["9up", "update", "-j2"]).get(), 2);
+    assert_eq!(
+        parsed_jobs(&["9up", "exec", "--jobs", "3", "--", "true"]).get(),
+        3
+    );
+    assert_eq!(parsed_jobs(&["9up", "exec", "--", "true"]), DEFAULT_JOBS);
+    assert_eq!(UpdateArgs::default().jobs, DEFAULT_JOBS);
+}
+
+/// Guards that zero jobs is a usage error on both pooled commands; a zero bound
+/// could never run a repository.
+#[test]
+fn jobs_rejects_zero() {
+    assert!(Cli::try_parse_from(["9up", "update", "--jobs", "0"]).is_err());
+    assert!(Cli::try_parse_from(["9up", "exec", "-j", "0", "--", "true"]).is_err());
 }
 
 /// Guards a directory named like a command; after `--` it is still updated as a path.

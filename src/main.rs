@@ -93,7 +93,8 @@ fn run(app: &mut App, cli: &Cli) -> io::Result<ExitCode> {
         Some(Command::Exec {
             paths,
             depth,
+            jobs,
             command,
-        }) => commands::exec(app, paths, *depth, command),
+        }) => commands::exec(app, paths, *depth, jobs.get(), command),
     }
 }

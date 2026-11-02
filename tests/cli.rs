@@ -583,6 +583,31 @@ fn depth_uses_the_short_flag_t() {
     assert!(stdout(&out).contains("repo (1 repository)"));
 }
 
+/// Guards `--jobs` end to end: both pooled commands accept it, and zero is a usage error.
+#[test]
+fn jobs_flag_is_accepted_by_update_and_exec() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    make_repo(&repo);
+    let updated = nine_up_ok(
+        dir.path(),
+        &["update", "--jobs", "1", repo.to_str().unwrap()],
+    );
+    assert!(stdout(&updated).contains("repo (1 repository)"));
+    let bare = nine_up_ok(dir.path(), &["-j", "1", repo.to_str().unwrap()]);
+    assert!(stdout(&bare).contains("repo (1 repository)"));
+    let ran = nine_up_ok(
+        dir.path(),
+        &["exec", "-j", "1", repo.to_str().unwrap(), "--", "true"],
+    );
+    assert!(stdout(&ran).contains("repo (1 repository)"));
+    let zero = nine_up(
+        dir.path(),
+        &["update", "--jobs", "0", repo.to_str().unwrap()],
+    );
+    assert_eq!(zero.status.code(), Some(2));
+}
+
 /// Guards `update -t 0` on a plain directory: it is a path error, and a path error is a
 /// normal run outcome, so the run still succeeds.
 #[test]

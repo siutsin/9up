@@ -44,10 +44,15 @@ macOS included. A relative `XDG_CONFIG_HOME` is ignored with a warning, and an e
 
 ### Options
 
-| Command  | Options                                                                                          |
-|----------|--------------------------------------------------------------------------------------------------|
-| `update` | `--current-only`, `--fetch-only`, `--prune`, `--depth <n>` (short `-t`; negative means no limit) |
-| `exec`   | `--depth <n>`                                                                                    |
+| Command  | Option           | Notes                                                                               |
+|----------|------------------|-------------------------------------------------------------------------------------|
+| `update` | `--current-only` | Fetch only the remote the current branch tracks                                     |
+| `update` | `--fetch-only`   | Only fetch; do not update any branch                                                |
+| `update` | `--prune`        | Pass `--prune` to each fetch                                                        |
+| `update` | `--depth <n>`    | Search depth below each path; short `-t`; negative means no limit                   |
+| `update` | `--jobs <n>`     | Run at most this many repositories at once, across all paths; short `-j`; default 8 |
+| `exec`   | `--depth <n>`    | Search depth below each path; short `-t`; negative means no limit                   |
+| `exec`   | `--jobs <n>`     | Run at most this many repositories at once, across all paths; short `-j`; default 8 |
 
 ## Development
 

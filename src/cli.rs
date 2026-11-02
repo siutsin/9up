@@ -1,7 +1,12 @@
 use std::env;
 use std::ffi::OsString;
+use std::num::NonZeroUsize;
 
 use clap::{Args, Parser, Subcommand};
+
+/// The default job bound: the work waits on subprocesses and the network,
+/// not the CPU, so the bound is not the core count.
+pub const DEFAULT_JOBS: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
 #[derive(Parser)]
 #[command(name = "9up", version)]
@@ -14,7 +19,7 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
-#[derive(Args, Default)]
+#[derive(Args)]
 pub struct UpdateArgs {
     /// Update the repositories under these paths. No paths means the configured repositories.
     pub paths: Vec<String>,
@@ -34,6 +39,24 @@ pub struct UpdateArgs {
     /// Search depth below each path. A negative value means no limit.
     #[arg(short = 't', long, default_value_t = 3, allow_negative_numbers = true)]
     pub depth: i32,
+
+    /// Run at most this many repositories at once, across all paths.
+    #[arg(short, long, default_value_t = DEFAULT_JOBS)]
+    pub jobs: NonZeroUsize,
+}
+
+impl Default for UpdateArgs {
+    /// Give the bare form the default job bound, so it pools like an explicit update.
+    fn default() -> Self {
+        Self {
+            paths: Vec::new(),
+            current_only: false,
+            fetch_only: false,
+            prune: false,
+            depth: 0,
+            jobs: DEFAULT_JOBS,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -68,6 +91,10 @@ pub enum Command {
         #[arg(short = 't', long, default_value_t = 3, allow_negative_numbers = true)]
         depth: i32,
 
+        /// Run at most this many repositories at once, across all paths.
+        #[arg(short, long, default_value_t = DEFAULT_JOBS)]
+        jobs: NonZeroUsize,
+
         /// The command and its arguments, after `--`.
         #[arg(last = true, required = true, num_args = 1..)]
         command: Vec<String>,
@@ -95,7 +122,10 @@ fn insert_update(mut args: Vec<OsString>) -> Vec<OsString> {
             after_separator = true;
             break;
         }
-        if token == "-C" || token == "--config" || token == "-t" || token == "--depth" {
+        if matches!(
+            &*token,
+            "-C" | "--config" | "-t" | "--depth" | "-j" | "--jobs"
+        ) {
             index += 2;
             continue;
         }
@@ -125,11 +155,14 @@ fn is_update_option(token: &str) -> bool {
     if token.starts_with("--") {
         return matches!(
             token,
-            "--current-only" | "--fetch-only" | "--prune" | "--depth"
-        ) || token.starts_with("--depth=");
+            "--current-only" | "--fetch-only" | "--prune" | "--depth" | "--jobs"
+        ) || token.starts_with("--depth=")
+            || token.starts_with("--jobs=");
     }
-    // Attached depth: -t3, -t-1 and -t=3.
-    if let Some(rest) = token.strip_prefix("-t")
+    // Attached values: -t3, -t-1, -t=3 and -j3, -j=3.
+    if let Some(rest) = token
+        .strip_prefix("-t")
+        .or_else(|| token.strip_prefix("-j"))
         && rest
             .chars()
             .next()
@@ -141,7 +174,7 @@ fn is_update_option(token: &str) -> bool {
         && token.starts_with('-')
         && token[1..]
             .chars()
-            .all(|c| matches!(c, 'c' | 'f' | 'p' | 't'))
+            .all(|c| matches!(c, 'c' | 'f' | 'p' | 't' | 'j'))
 }
 
 #[cfg(test)]
