@@ -81,7 +81,7 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
           formula=$(sed -n 's/^formula = "\(.*\)"$/\1/p' dist-workspace.toml)
-          dist build --tag="v$version" --artifacts=global
+          mise exec aqua:axodotdev/cargo-dist@0.33.1 -- dist build --tag="v$version" --artifacts=global
           scripts/formula-test-block.sh "target/distrib/$formula.rb"
 
       - name: Check the formula
