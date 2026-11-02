@@ -71,10 +71,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install dist
-        # bash for pipefail, so a failed curl is not masked by the pipe to sh.
-        shell: bash
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.1/cargo-dist-installer.sh | sh
+      - name: Setup mise
+        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        with:
+          cache: false
+          install_args: "aqua:axodotdev/cargo-dist@0.33.1"
 
       - name: Generate the formula and add its test block
         run: |
