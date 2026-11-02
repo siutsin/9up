@@ -62,6 +62,42 @@ jobs:
       - name: Check the coverage
         run: mise run coverage
 
+  formula:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup mise
+        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        with:
+          cache: false
+          install_args: "aqua:axodotdev/cargo-dist@0.33.1"
+
+      - name: Generate the formula and add its test block
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          formula=$(sed -n 's/^formula = "\(.*\)"$/\1/p' dist-workspace.toml)
+          mise exec aqua:axodotdev/cargo-dist@0.33.1 -- dist build --tag="v$version" --artifacts=global
+          scripts/formula-test-block.sh "target/distrib/$formula.rb"
+
+      - name: Check the formula
+        run: |
+          export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+          formula=$(sed -n 's/^formula = "\(.*\)"$/\1/p' dist-workspace.toml)
+          tap_dir="$(brew --repository)/Library/Taps/local/homebrew-check"
+          mkdir -p "$tap_dir/Formula"
+          cp "target/distrib/$formula.rb" "$tap_dir/Formula/"
+          chmod 644 "$tap_dir/Formula/$formula.rb"
+          cd "$tap_dir"
+          brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict --fix "Formula/$formula.rb"
+          brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict "Formula/$formula.rb"
+          brew trust local/check
+          brew info "local/check/$formula" > /dev/null
+
   branch-coverage:
     runs-on: ubuntu-latest
 
