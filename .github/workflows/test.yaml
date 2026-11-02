@@ -91,6 +91,7 @@ jobs:
           tap_dir="$(brew --repository)/Library/Taps/local/homebrew-check"
           mkdir -p "$tap_dir/Formula"
           cp "target/distrib/$formula.rb" "$tap_dir/Formula/"
+          chmod 644 "$tap_dir/Formula/$formula.rb"
           cd "$tap_dir"
           brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict --fix "Formula/$formula.rb"
           brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict "Formula/$formula.rb"
