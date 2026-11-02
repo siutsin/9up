@@ -9,8 +9,8 @@ allow-dirty = ["ci"]
 ci = "github"
 installers = ["homebrew"]
 tap = "siutsin/homebrew-tap"
-# The formula takes the binary's name, not the package's (nine-up).
-formula = "9up"
+# A Homebrew class name cannot start with a digit, so the formula is not "9up".
+formula = "gau-up"
 publish-jobs = ["homebrew"]
 targets = [
     "aarch64-apple-darwin",

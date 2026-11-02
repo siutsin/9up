@@ -91,7 +91,7 @@ the version in `Cargo.toml`, commits, tags `v<version>` and pushes. The tag runs
 workflow. When it finishes, check the formula landed and installs:
 
 ```sh
-brew install siutsin/tap/9up
+brew install siutsin/tap/gau-up
 ```
 
 To change targets or installers, edit `dist-workspace.toml`, run `dist generate` and commit
