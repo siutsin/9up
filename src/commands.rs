@@ -1,4 +1,5 @@
 use std::io;
+use std::path::Path;
 use std::process::ExitCode;
 
 use crate::cli::UpdateArgs;
@@ -161,13 +162,44 @@ pub(crate) fn exec(
     Ok(ExitCode::SUCCESS)
 }
 
-/// The most repositories one batch runs at once. The work is subprocess and network
-/// waiting, not CPU work, so the bound does not come from the core count.
+/// The most repositories one batch runs at once, pooled across every input.
+/// The work is subprocess and network waiting, not CPU work, so the bound does
+/// not come from the core count.
 const MAX_CONCURRENT: usize = 8;
 
-/// Shared by `update` and `exec`: resolve each input in turn — only after the group
-/// before it has rendered — then run its repositories in batches, rendering each
-/// report on this thread. A comment input prints as its own line; a bad path in red.
+/// What prints ahead of a group's reports: its header, or the line a
+/// repository-less input stands for.
+enum Prelude {
+    Header(String, usize),
+    Comment(String),
+    PathError(String),
+}
+
+/// Print one input's prelude: the group header, a comment line, or a bad path in red.
+fn print_prelude(
+    prelude: &Prelude,
+    colour: bool,
+    home: Option<&Path>,
+    cwd: &Path,
+    out: &mut dyn io::Write,
+) -> io::Result<()> {
+    match prelude {
+        Prelude::Header(input, count) => print_header(out, colour, input, home, cwd, *count),
+        Prelude::Comment(text) => {
+            if text.is_empty() {
+                Ok(())
+            } else {
+                writeln!(out, "{}", cleaned(text))
+            }
+        }
+        Prelude::PathError(message) => writeln!(out, "{}", paint(colour, RED, message)),
+    }
+}
+
+/// Shared by `update` and `exec`: resolve every input first, then run all the
+/// repositories in one pooled set of batches, rendering each report on this
+/// thread. Each input's prelude prints in input order, ahead of its group's
+/// first report, so the output reads as it did when groups ran in turn.
 fn for_each_repo<T>(
     app: &mut App,
     inputs: &[String],
@@ -178,45 +210,41 @@ fn for_each_repo<T>(
 where
     T: Send,
 {
+    let mut preludes: Vec<Prelude> = Vec::new();
+    let mut pooled: Vec<(usize, discover::Repo)> = Vec::new();
     for input in inputs {
+        let group = preludes.len();
         match discover::resolve(input, &app.cwd, app.home.as_deref(), depth) {
             discover::Resolved::Repos(repos) => {
-                print_header(
-                    &mut *app.out,
-                    app.colour,
-                    input,
-                    app.home.as_deref(),
-                    &app.cwd,
-                    repos.len(),
-                )?;
-                run_group(app, &repos, &work, &mut render)?;
+                preludes.push(Prelude::Header(input.clone(), repos.len()));
+                pooled.extend(repos.into_iter().map(|repo| (group, repo)));
             }
-            discover::Resolved::Comment(text) => {
-                if !text.is_empty() {
-                    writeln!(&mut *app.out, "{}", cleaned(&text))?;
-                }
-            }
+            discover::Resolved::Comment(text) => preludes.push(Prelude::Comment(text)),
             discover::Resolved::PathError(message) => {
-                writeln!(&mut *app.out, "{}", paint(app.colour, RED, &message))?;
+                preludes.push(Prelude::PathError(message));
             }
         }
     }
-    Ok(())
-}
-
-/// Run a path's repositories in consecutive batches: a batch spawns only when the batch
-/// before it is fully joined and rendered.
-fn run_group<T>(
-    app: &mut App,
-    repos: &[discover::Repo],
-    work: &(impl Fn(&dyn Sys, &discover::Repo) -> T + Sync),
-    render: &mut impl FnMut(&T, bool, &mut dyn io::Write) -> io::Result<()>,
-) -> io::Result<()>
-where
-    T: Send,
-{
-    for batch in repos.chunks(MAX_CONCURRENT) {
-        run_batch(app, batch, work, render)?;
+    let home = app.home.clone();
+    let cwd = app.cwd.clone();
+    let mut next = 0;
+    let mut flush = |up_to: usize, colour: bool, out: &mut dyn io::Write| -> io::Result<()> {
+        while next < preludes.len() && next <= up_to {
+            print_prelude(&preludes[next], colour, home.as_deref(), &cwd, out)?;
+            next += 1;
+        }
+        Ok(())
+    };
+    let pooled_work = |sys: &dyn Sys, item: &(usize, discover::Repo)| (item.0, work(sys, &item.1));
+    let mut pooled_render = |pair: &(usize, T), colour: bool, out: &mut dyn io::Write| {
+        flush(pair.0, colour, out)?;
+        render(&pair.1, colour, out)
+    };
+    for batch in pooled.chunks(MAX_CONCURRENT) {
+        run_batch(app, batch, &pooled_work, &mut pooled_render)?;
+    }
+    if !preludes.is_empty() {
+        flush(preludes.len() - 1, app.colour, &mut *app.out)?;
     }
     Ok(())
 }
@@ -231,14 +259,15 @@ enum Failure {
 /// Run one batch on scoped threads, joining in name order and rendering each report
 /// as its join returns. Every handle is joined before this returns, so a worker
 /// panic surfaces only as a join result.
-fn run_batch<T>(
+fn run_batch<T, I>(
     app: &mut App,
-    batch: &[discover::Repo],
-    work: &(impl Fn(&dyn Sys, &discover::Repo) -> T + Sync),
+    batch: &[I],
+    work: &(impl Fn(&dyn Sys, &I) -> T + Sync),
     render: &mut impl FnMut(&T, bool, &mut dyn io::Write) -> io::Result<()>,
 ) -> io::Result<()>
 where
     T: Send,
+    I: Sync,
 {
     let sys: &dyn Sys = &*app.sys;
     let colour = app.colour;
