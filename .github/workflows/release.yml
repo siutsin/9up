@@ -15,7 +15,7 @@ env:
 
 jobs:
   plan:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
       tag: ${{ !github.event.pull_request && github.ref_name || '' }}
@@ -25,7 +25,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-          submodules: recursive
       - name: Install dist
         # bash for pipefail, so a failed curl is not masked by the pipe to sh.
         shell: bash
@@ -63,7 +62,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-          submodules: recursive
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
         run: |
@@ -105,14 +103,13 @@ jobs:
 
   build-global-artifacts:
     needs: [plan, build-local-artifacts]
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     env:
       BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-          submodules: recursive
       - name: Install cached dist
         uses: actions/download-artifact@v8
         with:
@@ -144,12 +141,11 @@ jobs:
   host:
     needs: [plan, build-local-artifacts, build-global-artifacts]
     if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-          submodules: recursive
       - name: Install cached dist
         uses: actions/download-artifact@v8
         with:
@@ -195,7 +191,7 @@ jobs:
     # The tap token lives in the deployment environment, not the repo.
     environment: deployment
     needs: [plan, host]
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     env:
       PLAN: ${{ needs.plan.outputs.val }}
       GITHUB_USER: "axo bot"
@@ -234,10 +230,3 @@ jobs:
           done
           git push
 
-  announce:
-    needs: [plan, host, publish-homebrew-formula]
-    # always(): wait for publish jobs that may skip themselves; host itself must succeed.
-    if: ${{ always() && needs.host.result == 'success' && (needs.publish-homebrew-formula.result == 'skipped' || needs.publish-homebrew-formula.result == 'success') }}
-    runs-on: ubuntu-22.04
-    steps:
-      - run: "true"
