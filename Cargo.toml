@@ -2,6 +2,10 @@
 name = "nine-up"
 version = "0.1.0"
 edition = "2024"
+description = "Update many git repositories at once"
+homepage = "https://github.com/siutsin/9up"
+repository = "https://github.com/siutsin/9up"
+license = "MIT"
 
 [[bin]]
 name = "9up"

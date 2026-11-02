@@ -1,0 +1,8 @@
+# cargo-release: bump, commit, tag and push only. cargo-dist does the
+# publishing (GitHub Release and the Homebrew formula), so crates.io is off.
+publish = false
+push = true
+tag = true
+# The release workflow triggers on this tag shape.
+tag-name = "v{{version}}"
+allow-branch = ["master"]

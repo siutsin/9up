@@ -1,0 +1,20 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.33.1"
+# release.yaml started as generated output and is now kept by hand;
+# allow-dirty records that it is expected to differ from the generated file.
+allow-dirty = ["ci"]
+ci = "github"
+installers = ["homebrew"]
+tap = "siutsin/homebrew-tap"
+# The formula takes the binary's name, not the package's (nine-up).
+formula = "9up"
+publish-jobs = ["homebrew"]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
