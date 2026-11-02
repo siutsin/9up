@@ -90,11 +90,6 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
-      - name: Add the formula test block
-        run: |
-          for formula in target/distrib/*.rb; do
-            scripts/formula-test-block.sh "$formula"
-          done
       - name: "Upload artifacts"
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -137,6 +132,11 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: Add the formula test block
+        run: |
+          for formula in target/distrib/*.rb; do
+            scripts/formula-test-block.sh "$formula"
+          done
       - name: "Upload artifacts"
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
