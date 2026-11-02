@@ -62,6 +62,40 @@ jobs:
       - name: Check the coverage
         run: mise run coverage
 
+  formula:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install dist
+        # bash for pipefail, so a failed curl is not masked by the pipe to sh.
+        shell: bash
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.1/cargo-dist-installer.sh | sh
+
+      - name: Generate the formula and add its test block
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          formula=$(sed -n 's/^formula = "\(.*\)"$/\1/p' dist-workspace.toml)
+          dist build --tag="v$version" --artifacts=global
+          scripts/formula-test-block.sh "target/distrib/$formula.rb"
+
+      - name: Check the formula
+        run: |
+          export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+          formula=$(sed -n 's/^formula = "\(.*\)"$/\1/p' dist-workspace.toml)
+          tap_dir="$(brew --repository)/Library/Taps/local/homebrew-check"
+          mkdir -p "$tap_dir/Formula"
+          cp "target/distrib/$formula.rb" "$tap_dir/Formula/"
+          cd "$tap_dir"
+          brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict --fix "Formula/$formula.rb"
+          brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict "Formula/$formula.rb"
+          brew trust local/check
+          brew info "local/check/$formula" > /dev/null
+
   branch-coverage:
     runs-on: ubuntu-latest
 
