@@ -15,7 +15,7 @@ env:
 
 jobs:
   plan:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
       tag: ${{ !github.event.pull_request && github.ref_name || '' }}
@@ -103,7 +103,7 @@ jobs:
 
   build-global-artifacts:
     needs: [plan, build-local-artifacts]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
     steps:
@@ -141,7 +141,7 @@ jobs:
   host:
     needs: [plan, build-local-artifacts, build-global-artifacts]
     if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -191,7 +191,7 @@ jobs:
     # The tap token lives in the deployment environment, not the repo.
     environment: deployment
     needs: [plan, host]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       PLAN: ${{ needs.plan.outputs.val }}
       GITHUB_USER: "axo bot"
