@@ -229,12 +229,13 @@ fn a_write_keeps_the_replaced_files_permissions() {
     );
 }
 
-/// Guards the write's cleanup on a path with no file name
-/// (`..`) fails its rename, and no temp file is left in the working directory.
+/// Guards the write's cleanup: a path with no file name
+/// (`..`) fails its rename, and no temp file is left in the directory.
 #[test]
 fn a_write_to_a_path_with_no_file_name_fails_and_cleans_up() {
-    assert!(RealSys.write(Path::new(".."), b"x").is_err());
-    let leftovers: Vec<_> = std::fs::read_dir(".")
+    let dir = tempfile::tempdir().unwrap();
+    assert!(RealSys.write(&dir.path().join(".."), b"x").is_err());
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_name().to_string_lossy().starts_with("9up.tmp-"))
