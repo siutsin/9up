@@ -1,0 +1,44 @@
+name: Cargo Audit
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: '22 10 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Unreviewed tools run only in the sandbox.
+      - name: Scan for known flaws
+        uses: geomys/sandboxed-step@a6bfc174e532cea4f378e3427bcde8b714c2e810 # v1.2.2
+        with:
+          run: |
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            export PATH="$HOME/.cargo/bin:$PATH"
+            rustup toolchain install
+            cargo install cargo-audit --version 0.23.0 --locked
+            set +e
+            # Exit 1 is a found flaw. Retry only tool errors (exit 2).
+            for attempt in 1 2 3; do
+              cargo audit
+              status=$?
+              if [ "$status" -eq 0 ] || [ "$status" -eq 1 ]; then
+                exit "$status"
+              fi
+              echo "cargo audit failed with $status (attempt $attempt)"
+              sleep 15
+            done
+            exit 2
