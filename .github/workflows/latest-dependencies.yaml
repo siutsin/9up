@@ -1,0 +1,34 @@
+name: Latest Dependencies
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/latest-dependencies.yaml'
+  schedule:
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-latest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Unreviewed deps run only in the sandbox.
+      - name: Test latest dependencies
+        uses: geomys/sandboxed-step@a6bfc174e532cea4f378e3427bcde8b714c2e810 # v1.2.2
+        with:
+          run: |
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            export PATH="$HOME/.cargo/bin:$PATH"
+            rustup toolchain install
+            cargo install cargo-edit --version 0.13.14 --locked
+            cargo upgrade --pinned allow --incompatible allow
+            cargo update
+            cargo test --locked

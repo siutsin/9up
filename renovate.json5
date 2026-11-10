@@ -14,6 +14,13 @@
   lockFileMaintenance: { enabled: true },
   packageRules: [
     {
+      description: 'Test Cargo updates weekly instead of opening PRs',
+      matchManagers: [
+        'cargo',
+      ],
+      enabled: false,
+    },
+    {
       // Vulnerability fixes ship at once. The age wait stays for all other updates.
       matchJsonata: [
         '$exists(vulnerabilityFixVersion) or $exists(isVulnerabilityAlert)',
