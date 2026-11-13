@@ -1,5 +1,5 @@
 [tools]
-node = "26.13.0"
+node = "26.13.1"
 "npm:markdownlint-cli2" = "0.24.0"
 "aqua:zizmorcore/zizmor" = "1.32.0"
 "aqua:taiki-e/cargo-llvm-cov" = "0.9.1"
