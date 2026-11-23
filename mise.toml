@@ -2,7 +2,7 @@
 node = "26.13.1"
 "npm:markdownlint-cli2" = "0.24.2"
 "aqua:zizmorcore/zizmor" = "1.32.0"
-"aqua:taiki-e/cargo-llvm-cov" = "0.9.1"
+"aqua:taiki-e/cargo-llvm-cov" = "0.9.2"
 
 # The coverage gate, run by CI and by hand. Production code must sit at
 # 100 percent regions and functions. The gate measures the production
